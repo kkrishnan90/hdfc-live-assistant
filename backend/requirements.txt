@@ -1,0 +1,11 @@
+fastapi 
+uvicorn
+uvicorn[standard]
+websockets
+google-genai
+quart
+quart-cors
+hypercorn
+google-cloud-bigquery
+python-dotenv
+google-cloud-discoveryengine
