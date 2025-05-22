@@ -12,13 +12,13 @@ const OUTPUT_SAMPLE_RATE = 24000;
 const MIC_BUFFER_SIZE = 4096;
 
 const LANGUAGES = [
-  { code: 'en-US', name: 'English' },
-  { code: 'th-TH', name: 'Thai' },
-  { code: 'id-ID', name: 'Indonesian' },
+  { code: 'en-IN', name: 'English' },
+  { code: 'ta-IN', name: 'Tamil' },
+  { code: 'hi-IN', name: 'Hindi' },
 ];
 
 // Configure backend hosts for different environments
-const PRODUCTION_HOST = 'gemini-backend-service-1018963165306.us-central1.run.app';
+const PRODUCTION_HOST = 'hdfc-assistant-backend-1018963165306.us-central1.run.app';
 const LOCAL_HOST = 'localhost:8000';
 
 // Set the backend host based on environment

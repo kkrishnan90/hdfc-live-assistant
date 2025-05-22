@@ -27,7 +27,8 @@ LOCATION = "global" # Location for Discovery Engine API
 
 try:
     # Assumes ADC or default credentials are set up
-    client = bigquery.Client(project="account-pocs", credentials=service_account.Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE))
+    # client = bigquery.Client(project="account-pocs", credentials=service_account.Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE))
+    client = bigquery.Client()
 except Exception as e:
     print(f"Error initializing BigQuery client: {e}")
     print("Ensure GOOGLE_APPLICATION_CREDENTIALS is set or you are in a GCP environment with appropriate permissions.")

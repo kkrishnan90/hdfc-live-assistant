@@ -6,11 +6,11 @@
 # Set variables
 PROJECT_ID="account-pocs"
 COMMIT_SHA=$(date +%Y%m%d-%H%M%S)
-SERVICE_NAME="frontend-service"
+SERVICE_NAME="hdfc-assistant-frontend"
 REGION="us-central1"
 
 # Hard-coded backend URL as specified
-BACKEND_URL="https://gemini-backend-service-1018963165306.us-central1.run.app"
+BACKEND_URL="https://hdfc-assistant-backend-1018963165306.us-central1.run.app"
 
 echo "=== Deploying Frontend to Cloud Run ==="
 echo "Project ID: $PROJECT_ID"

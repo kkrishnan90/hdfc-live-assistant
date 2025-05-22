@@ -6,9 +6,9 @@
 # Set variables
 PROJECT_ID="account-pocs"
 COMMIT_SHA=$(date +%Y%m%d-%H%M%S)
-SERVICE_NAME="gemini-backend-service"
+SERVICE_NAME="hdfc-assistant-backend"
 REGION="us-central1"
-IMAGE_NAME="gemini-backend"
+IMAGE_NAME="hdfc-assistant-backend"
 
 echo "=== Deploying Backend to Cloud Run ==="
 echo "Project ID: $PROJECT_ID"
