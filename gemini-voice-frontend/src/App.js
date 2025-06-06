@@ -1,10 +1,15 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useContext } from 'react';
+import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
 import './App.css';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
   faMicrophone, faMicrophoneSlash, faStop, faPaperPlane, faPlay,
   faWifi, faPowerOff, faComments, faPause
 } from '@fortawesome/free-solid-svg-icons';
+import { LogoProvider, LogoContext } from './LogoContext';
+import Header from './Header';
+import Admin from './Admin';
+import LogoUploader from './LogoUploader';
 
 // Constants
 const INPUT_SAMPLE_RATE = 16000;
@@ -22,7 +27,6 @@ const PRODUCTION_HOST = 'hdfc-assistant-backend-1018963165306.us-central1.run.ap
 const LOCAL_HOST = 'localhost:8000';
 
 // Set the backend host based on environment
-// Use window.location.hostname to detect if we're in production or local development
 const isProduction = window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
 const BACKEND_HOST = isProduction ? PRODUCTION_HOST : LOCAL_HOST;
 
@@ -32,6 +36,21 @@ const HTTP_PROTOCOL = isProduction ? 'https' : 'http';
 const generateUniqueId = () => `${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 7)}`;
 
 const App = () => {
+  return (
+    <LogoProvider>
+      <Router>
+        <div className="app-container">
+          <Routes>
+            <Route path="/admin" element={<Admin />} />
+            <Route path="/" element={<MainContent />} />
+          </Routes>
+        </div>
+      </Router>
+    </LogoProvider>
+  );
+};
+
+const MainContent = () => {
   const [isRecording, setIsRecording] = useState(false); // Is microphone actively sending audio
   const [isSessionActive, setIsSessionActive] = useState(false); // Is the overall session (WS + mic) active
   const [isMuted, setIsMuted] = useState(false); // Is microphone muted
@@ -42,7 +61,10 @@ const App = () => {
   const [selectedLanguage, setSelectedLanguage] = useState(LANGUAGES[0].code);
   const [bigQueryLogs, setBigQueryLogs] = useState([]);
   const [webSocketStatus, setWebSocketStatus] = useState('N/A');
-
+  const [fabActive, setFabActive] = useState(false);
+  
+  // Get colors from LogoContext
+  const { dominantColor, complementaryColor } = useContext(LogoContext);
 
   const isRecordingRef = useRef(isRecording);
   const isSessionActiveRef = useRef(isSessionActive);
@@ -65,7 +87,6 @@ const App = () => {
 
   const addLogEntry = useCallback((type, content) => {
     if (type === 'gemini_audio' || type === 'mic_control') {
-      // console.log(`[UI_PANEL_FILTERED] Type: ${type}, Content: "${content}"`);
       return;
     }
     const newEntry = {
@@ -98,7 +119,6 @@ const App = () => {
         const uniqueNewEntries = newLogEntries.filter(newLog => !existingLogContents.has(newLog.content));
         return [...prevMessages, ...uniqueNewEntries].sort((a, b) => new Date('1970/01/01 ' + a.timestamp) - new Date('1970/01/01 ' + b.timestamp));
       });
-      // No need to update bigQueryLogs as it's not used elsewhere
     } catch (error) {
       console.error("Failed to fetch BigQuery logs:", error);
       addLogEntry('error', `Failed to fetch BigQuery logs: ${error.message}`);
@@ -284,7 +304,7 @@ const App = () => {
     }
     setIsRecording(true);
     addLogEntry('mic_status', 'Microphone is NOW actively sending data.');
-  }, [addLogEntry, processAudio, getPlaybackAudioContext, isRecordingRef, isSessionActiveRef, setIsSessionActive, mediaStreamRef, localAudioContextRef, scriptProcessorNodeRef, socketRef]); // Removed constants from dependencies
+  }, [addLogEntry, processAudio, getPlaybackAudioContext]);
 
   const handlePauseListening = useCallback(() => {
     if (!isRecordingRef.current) {
@@ -294,7 +314,7 @@ const App = () => {
     addLogEntry('mic_control', 'Pause Microphone Input requested by user.');
     setIsRecording(false);
     addLogEntry('mic_status', 'Microphone is NOW paused (not sending data).');
-  }, [addLogEntry, isRecordingRef, setIsRecording]); // Added missing dependencies
+  }, [addLogEntry]);
 
   const handleStopListeningAndCleanupMic = useCallback(() => {
     addLogEntry('mic_control', 'Full Microphone Stop and Resource Cleanup requested.');
@@ -323,7 +343,7 @@ const App = () => {
     }
     audioChunkSentCountRef.current = 0;
     addLogEntry('mic_status', 'Microphone resources cleaned up.');
-  }, [addLogEntry, setIsRecording, scriptProcessorNodeRef, mediaStreamRef, localAudioContextRef, audioChunkSentCountRef]); // Added missing dependencies
+  }, [addLogEntry]);
 
   const connectWebSocket = useCallback((language) => {
     if (socketRef.current && (socketRef.current.readyState === WebSocket.OPEN || socketRef.current.readyState === WebSocket.CONNECTING)) {
@@ -348,8 +368,8 @@ const App = () => {
       addLogEntry('ws', `WebSocket Connected (Lang: ${language}).`);
       if (isSessionActiveRef.current) {
         addLogEntry('session_flow', 'Session is active. Proceeding to start microphone input via handleStartListening.');
-        handleStartListening(false); // This will set isRecording to true
-        setIsMuted(false); // Ensure mic is unmuted when session starts/restarts
+        handleStartListening(false);
+        setIsMuted(false);
       } else {
         addLogEntry('ws_warn', 'WebSocket opened, but session is NOT marked active. Mic not started.');
       }
@@ -430,7 +450,7 @@ const App = () => {
         socketRef.current.close(1000, 'User stopped session');
       }
       setIsSessionActive(false);
-      setIsMuted(false); // Reset mute state when session stops
+      setIsMuted(false);
       addLogEntry('session_status', 'Session INACTIVE.');
     } else {
       addLogEntry('session_control', 'User requested to START session.');
@@ -440,7 +460,7 @@ const App = () => {
       addLogEntry('session_flow', `Attempting to connect WebSocket for session start (Language: ${currentLangName}).`);
 
       setIsSessionActive(true);
-      setIsMuted(false); // Ensure mic is unmuted when starting a new session
+      setIsMuted(false);
       connectWebSocket(selectedLanguage);
       addLogEntry('session_status', 'Session PENDING (WebSocket connecting, Mic to start on WS open).');
     }
@@ -455,10 +475,9 @@ const App = () => {
         return newMutedState;
       });
     } else {
-      // If session is active but not recording (e.g., after explicit pause, or initial state)
       addLogEntry('mic_control', 'Mic button (unmute/start) pressed while not recording in active session. Attempting to start mic.');
-      setIsMuted(false); // Ensure unmuted
-      handleStartListening(); // This will set isRecording to true
+      setIsMuted(false);
+      handleStartListening();
     }
   }, [addLogEntry, handleStartListening]);
 
@@ -486,8 +505,17 @@ const App = () => {
 
   useEffect(() => {
     addLogEntry('status', 'Welcome! Click "Start Session" or type your query.');
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [addLogEntry]);
+  
+  // Apply dynamic colors as CSS variables whenever they change
+  useEffect(() => {
+    if (dominantColor) {
+      document.documentElement.style.setProperty('--dominant-color', dominantColor);
+    }
+    if (complementaryColor) {
+      document.documentElement.style.setProperty('--complementary-color', complementaryColor);
+    }
+  }, [dominantColor, complementaryColor]);
 
 
   const handleClearConsole = () => {
@@ -495,141 +523,86 @@ const App = () => {
     addLogEntry('console', 'Console cleared by user.');
   };
 
-  const [fabActive, setFabActive] = useState(false);
-
   const handleFabClick = () => {
-    if (!fabActive) {
-      // Start WebSocket connection
-      handleToggleSession();
-      setFabActive(true);
-    } else {
-      // Stop WebSocket connection
-      handleToggleSession();
-      setFabActive(false);
-    }
+    setFabActive(!fabActive);
+    handleToggleSession();
   };
 
   return (
-    <div className="app-container">
-      <div className="console-panel">
-        <div className="console-header">
-          <h2>Console</h2>
-          <div className="console-header-controls">
-            <select className="console-dropdown" defaultValue="conversations">
-              <option value="conversations">Conversations</option>
-            </select>
-            {/* console-paused-button removed as its info is now in control-bar */}
-          </div>
-        </div>
-        <div className="logs-area" ref={logsAreaRef}>
-          {isLoading && <p className="loading-indicator">Loading...</p>}
-          {messages.map(msg => (
-            <div key={msg.id} className={`log-entry log-entry-${msg.type} ${msg.type === 'bigquery' ? 'log-entry-bigquery' : ''}`}>
-              <span className="log-timestamp">[{msg.timestamp}] </span>
-              <span className="log-prefix">{msg.type.toUpperCase()}: </span>
-              <span className="log-message">{msg.content}</span>
-            </div>
-          ))}
-        </div>
-        <div className="text-input-area console-text-input-area">
-          <input
-            type="text"
-            className="text-input"
-            value={textInputValue}
-            onChange={(e) => setTextInputValue(e.target.value)}
-            onKeyPress={(e) => e.key === 'Enter' && handleSendTextMessage()}
-            placeholder="Type something..."
-            disabled={!isSessionActive}
-          />
-          <button onClick={handleSendTextMessage} className="control-button send-button" disabled={!textInputValue.trim() || !isSessionActive}>
-            <FontAwesomeIcon icon={faPaperPlane} />
-          </button>
-        </div>
-      </div>
-
+    <>
       <div className="main-panel">
         <div className="main-panel-header">
-          <div className="hdfc-header">
-            <img src={require('./images/image.png')} alt="HDFC Bank" className="hdfc-logo-img" />
-          </div>
+          <Header />
         </div>
-        <div className="results-content chat-area" ref={chatAreaRef}>
-          {transcriptionMessages.length === 0 && (
+        <div className="results-content" ref={chatAreaRef}>
+          {transcriptionMessages.length === 0 ? (
             <div className="results-content-placeholder">
-              <p>Audio transcriptions will appear here when a session is active.</p>
+              Messages and data from the assistant will appear here.
             </div>
+          ) : (
+            transcriptionMessages.map((msg, index) => (
+              <div key={index} className={`chat-bubble ${msg.sender === 'user' ? 'user-bubble' : 'ai-bubble'}`}>
+                <div className="chat-bubble-text">{msg.text}</div>
+              </div>
+            ))
           )}
-          {transcriptionMessages.map(msg => (
-            <div key={msg.id} className={`chat-bubble ${msg.sender === 'user' ? 'user-bubble' : 'ai-bubble'}`}>
-              <div className="chat-bubble-text">{msg.text}</div>
+        </div>
+      </div>
+      <div className="right-panel console-panel">
+        <div className="controls">
+          <button onClick={handleToggleSession} className={isSessionActive ? 'active' : ''}>
+            {isSessionActive ? 'Stop Session' : 'Start Session'}
+          </button>
+          <button onClick={handleMicMuteToggle} disabled={!isSessionActive}>
+            <FontAwesomeIcon icon={isMuted ? faMicrophoneSlash : faMicrophone} />
+            {isMuted ? 'Unmute' : 'Mute'}
+          </button>
+          <button onClick={handleClearConsole}>Clear Console</button>
+        </div>
+        <div className="logs-area" ref={logsAreaRef}>
+          {messages.map((msg) => (
+            <div key={msg.id} className={`log-entry log-${msg.type}`}>
+              <span className="log-timestamp">{msg.timestamp}</span>
+              <span className="log-content">{msg.content}</span>
             </div>
           ))}
         </div>
-      </div>
-
-        <div className="control-bar">
-          <div className="control-tray main-controls">
-            <button onClick={handleToggleSession} className="control-button icon-button session-button" title={isSessionActive ? "Stop Current Session" : "Start a New Session"}>
-              <div className="icon-button-content">
-                <FontAwesomeIcon icon={isSessionActive ? faStop : faPlay} />
-                <span className="icon-button-text">{isSessionActive ? 'Stop' : 'Start'}</span>
-              </div>
-            </button>
-            <button
-              onClick={handleMicMuteToggle}
-              className={`control-button icon-button mic-button ${isRecording && !isMutedRef.current ? 'active' : ''} ${isMutedRef.current ? 'muted' : ''}`}
-              disabled={!isSessionActiveRef.current}
-              title={isMutedRef.current ? "Unmute Microphone" : (isRecordingRef.current ? "Mute Microphone" : "Start Microphone")}
-            >
-              <div className="icon-button-content">
-                <FontAwesomeIcon icon={isMutedRef.current ? faMicrophoneSlash : faMicrophone} />
-                <span className="icon-button-text">{isMutedRef.current ? 'Muted' : 'Unmuted'}</span>
-              </div>
-            </button>
-            <div className="audio-signal-placeholder">
-              {isRecording && !isMuted && (
-                <div className="audio-wave">
-                  <span></span><span></span><span></span><span></span><span></span>
-                </div>
-              )}
+        <div className="control-tray secondary-controls">
+          <select
+            value={selectedLanguage}
+            onChange={(e) => setSelectedLanguage(e.target.value)}
+            disabled={isSessionActiveRef.current}
+            className="language-selector-dropdown"
+            title="Select Language (Session restarts on change if active)"
+          >
+            {LANGUAGES.map(lang => (
+              <option key={lang.code} value={lang.code}>{lang.name}</option>
+            ))}
+          </select>
+          <div className="status-indicator icon-status-indicator websocket-status" title="WebSocket Connection Status">
+            <div className="icon-status-content">
+              <FontAwesomeIcon icon={faWifi} />
+              <span className="icon-status-text">WS: {webSocketStatus}</span>
             </div>
           </div>
-          <div className="control-tray secondary-controls">
-            <select
-              value={selectedLanguage}
-              onChange={(e) => setSelectedLanguage(e.target.value)}
-              disabled={isSessionActiveRef.current}
-              className="language-selector-dropdown"
-              title="Select Language (Session restarts on change if active)"
-            >
-              {LANGUAGES.map(lang => (
-                <option key={lang.code} value={lang.code}>{lang.name}</option>
-              ))}
-            </select>
-            <div className="status-indicator icon-status-indicator websocket-status" title="WebSocket Connection Status">
-              <div className="icon-status-content">
-                <FontAwesomeIcon icon={faWifi} />
-                <span className="icon-status-text">WS: {webSocketStatus}</span>
-              </div>
-            </div>
-            <div className="status-indicator icon-status-indicator session-active-status" title="Session Status">
-              <div className="icon-status-content">
-                <FontAwesomeIcon icon={faPowerOff} />
-                <span className="icon-status-text">{isSessionActiveRef.current ? 'Session: Active' : 'Session: Inactive'}</span>
-              </div>
+          <div className="status-indicator icon-status-indicator session-active-status" title="Session Status">
+            <div className="icon-status-content">
+              <FontAwesomeIcon icon={faPowerOff} />
+              <span className="icon-status-text">{isSessionActiveRef.current ? 'Session: Active' : 'Session: Inactive'}</span>
             </div>
           </div>
         </div>
+      </div>
 
-        {/* Floating Action Button */}
-        <button 
-          className={`floating-action-button ${fabActive ? 'fab-active' : ''}`} 
-          onClick={handleFabClick}
-          title={fabActive ? "Stop Session" : "Start Session"}
-        >
-          <FontAwesomeIcon icon={fabActive ? faPause : faComments} />
-        </button>
-    </div>
+      {/* Floating Action Button */}
+      <button 
+        className={`floating-action-button ${fabActive ? 'fab-active' : ''}`} 
+        onClick={handleFabClick}
+        title={fabActive ? "Stop Session" : "Start Session"}
+      >
+        <FontAwesomeIcon icon={fabActive ? faPause : faComments} />
+      </button>
+    </>
   );
 };
 

@@ -1,4 +1,4 @@
-fastapi 
+fastapi
 uvicorn
 uvicorn[standard]
 websockets
@@ -9,3 +9,6 @@ hypercorn
 google-cloud-bigquery
 python-dotenv
 google-cloud-discoveryengine
+Pillow==10.4.0
+extcolors==1.0.0
+google-cloud-storage

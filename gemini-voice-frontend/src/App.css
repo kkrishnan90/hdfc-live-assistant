@@ -1,3 +1,8 @@
+:root {
+  --dominant-color: #004c8f; /* HDFC Bank blue as default */
+  --complementary-color: #e61a23; /* HDFC Bank red as default */
+}
+
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
@@ -88,6 +93,9 @@ body {
 .log-entry-info .log-prefix {
   color: #3fb950; /* Green for status/info (GitHub success) */
 }
+.right-panel {
+  display: none;
+}
 
 .main-panel {
   flex-grow: 1;
@@ -107,17 +115,37 @@ body {
   width: 100%;
   display: flex;
   justify-content: center;
+  align-items: center;
   background-color: #004c8f; /* HDFC Bank blue background */
   padding: 10px 0;
   margin-bottom: 20px;
   border-bottom: 1px solid #e61a23; /* HDFC Bank red */
+  min-height: 60px;
 }
 
 .hdfc-logo-img {
   max-width: 100%;
   height: auto;
-  max-height: 60px;
+  max-height: 50px;
   object-fit: contain;
+}
+
+.App-header {
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 60px;
+}
+
+.App-header img {
+  max-width: 100%;
+  height: auto;
+  max-height: 50px;
+  object-fit: contain;
+  padding: 10px;
 }
 
 .results-content {
@@ -413,12 +441,19 @@ code {
   word-wrap: break-word;
   display: flex; /* To help with potential future icons or timestamps inside */
   flex-direction: column;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  transition: background-color 0.3s ease;
+}
+
+/* Add margin to the first message bubble */
+.results-content > .chat-bubble:first-child {
+  margin-top: 15px;
 }
  
 .user-bubble {
   align-self: flex-end;
-  background-color: #e61a23; /* HDFC Bank red */
-  color: white;
+  background-color: #f0f0f0;
+  color: #000000;
   margin-left: auto;
   margin-right: 0;
   border-bottom-right-radius: 5px; /* Pointed corner on user bubbles */
@@ -426,7 +461,7 @@ code {
  
 .ai-bubble {
   align-self: flex-start;
-  background-color: #004c8f; /* HDFC Bank blue */
+  background-color: var(--dominant-color); /* Dynamic color from context */
   color: white;
   margin-left: 0;
   margin-right: auto;
@@ -638,7 +673,7 @@ code {
   width: 60px;
   height: 60px;
   border-radius: 50%;
-  background-color: #004c8f; /* HDFC Bank blue */
+  background-color: var(--dominant-color); /* Dynamic color from context */
   color: white;
   border: none;
   box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
@@ -652,11 +687,11 @@ code {
 
 /* Active state of the FAB */
 .floating-action-button.fab-active {
-  background-color: #e61a23; /* HDFC Bank red */
+  background-color: var(--complementary-color); /* Dynamic color from context */
 }
 
 .floating-action-button:hover {
-  background-color: #003b6e; /* Slightly darker HDFC blue on hover */
+  filter: brightness(90%); /* Slightly darker on hover */
   transform: scale(1.05);
   box-shadow: 0 6px 12px rgba(0, 0, 0, 0.4);
 }
@@ -667,4 +702,11 @@ code {
 
 .floating-action-button svg {
   font-size: 24px; /* Size of the icon */
+}
+.App-logo {
+  height: 100px;
+  max-width: 100%;
+  max-height: 100px;
+  object-fit: contain;
+  pointer-events: none;
 }

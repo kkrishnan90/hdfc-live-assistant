@@ -6,9 +6,8 @@ import bigquery_functions
 from bigquery_functions import USER_ID # Import USER_ID
 import json
 import logging
-import time
 import uuid # Added for generating biller_id
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone
 
 # Configure logging
 logging.basicConfig(
@@ -45,11 +44,11 @@ def _log_tool_event(event_type: str, tool_name: str, parameters: dict, response:
 # 1. getBalance
 getBalance_declaration = types.FunctionDeclaration(
     name="getBalance",
-    description="Fetches details for a specified bank account, including balance. Uses natural language to find the account (e.g., 'current', 'my savings account').",
+    description="Fetches details for a specified bank account, including balance. Uses natural language to find the account (e.g., 'checking account', 'my savings account').",
     parameters=types.Schema(
         type=types.Type.OBJECT,
         properties={
-            "account_type": types.Schema(type=types.Type.STRING, description="The type or nickname of the account to fetch details for (e.g., 'current', 'savings', 'Mohit Primary Current').")
+            "account_type": types.Schema(type=types.Type.STRING, description="The type or nickname of the account to fetch details for (e.g., 'checking account', 'savings', 'Alex Primary Checking').")
         },
         required=["account_type"]
     )
@@ -59,26 +58,35 @@ async def getBalance(account_type: str):
     tool_name = "getBalance"
     params_sent = {"account_type": account_type}
     _log_tool_event("INVOCATION_START", tool_name, params_sent)
-    logger.info(f"[{tool_name}] Attempting to find account by natural language: {account_type}")
+    logger.info("[%s] Attempting to find account by natural language: %s", tool_name, account_type)
     api_response = {}
     try:
         # bigquery_functions.find_account_by_natural_language returns account details dict or None
         account_details = bigquery_functions.find_account_by_natural_language(USER_ID, account_type)
-        logger.info(f"[{tool_name}] Received from bigquery_functions.find_account_by_natural_language: {account_details}")
+        logger.info("[%s] Received from bigquery_functions.find_account_by_natural_language: %s", tool_name, account_details)
 
-        if account_details:
-            api_response = {
-                "status": "success",
-                "account_id": account_details.get("account_id"),
-                "account_type": account_details.get("account_type"),
-                "account_nickname": account_details.get("account_nickname"),
-                "balance": account_details.get("balance"),
-                "currency": account_details.get("currency") # Assuming currency is part of account_details
-            }
+        if account_details and account_details.get("status") == "SUCCESS":
+            account_id = account_details.get("account_id")
+            # Now that we have the account_id, fetch the balance
+            balance_details = bigquery_functions.get_account_balance_by_id(account_id, USER_ID)
+            
+            if balance_details and balance_details.get("status") == "SUCCESS":
+                api_response = {
+                    "status": "success",
+                    "account_id": account_id,
+                    "account_type": account_details.get("account_type"),
+                    "account_nickname": account_details.get("account_nickname"),
+                    "balance": balance_details.get("balance"),
+                    "currency": balance_details.get("currency")
+                }
+            else:
+                # Handle case where balance fetch fails
+                api_response = {"status": "error", "message": f"Account '{account_type}' found, but failed to fetch balance details."}
         else:
-            api_response = {"status": "error", "message": f"Account '{account_type}' not found or error fetching details."}
+            # Handle case where account finding fails
+            api_response = {"status": "error", "message": account_details.get("message", f"Account '{account_type}' not found or error fetching details.")}
     except Exception as e:
-        logger.error(f"[{tool_name}] Error calling BQ or processing result: {e}", exc_info=True)
+        logger.error("[%s] Error calling BQ or processing result: %s", tool_name, e, exc_info=True)
         api_response = {"status": "error", "message": f"An internal error occurred while fetching account balance for {account_type}."}
 
     _log_tool_event("INVOCATION_END", tool_name, params_sent, api_response)
@@ -91,7 +99,7 @@ getTransactionHistory_declaration = types.FunctionDeclaration(
     parameters=types.Schema(
         type=types.Type.OBJECT,
         properties={
-            "account_type": types.Schema(type=types.Type.STRING, description="The type or nickname of the account (e.g., 'current', 'savings', 'Mohit Primary Current')."),
+            "account_type": types.Schema(type=types.Type.STRING, description="The type or nickname of the account (e.g., 'checking account', 'savings', 'Alex Primary Checking')."),
             "limit": types.Schema(type=types.Type.INTEGER, description="The number of transactions to retrieve (defaults to 10).")
         },
         required=["account_type"]
@@ -102,19 +110,19 @@ async def getTransactionHistory(account_type: str, limit: int = 10): # Default l
     tool_name = "getTransactionHistory"
     params_sent = {"account_type": account_type, "limit": limit}
     _log_tool_event("INVOCATION_START", tool_name, params_sent)
-    logger.info(f"[{tool_name}] Finding account '{account_type}' to get transaction history.")
+    logger.info("[%s] Finding account '%s' to get transaction history.", tool_name, account_type)
     api_response = {}
     try:
         account_details = bigquery_functions.find_account_by_natural_language(USER_ID, account_type)
         if not account_details or not account_details.get("account_id"):
-            logger.warning(f"[{tool_name}] Account '{account_type}' not found.")
+            logger.warning("[%s] Account '%s' not found.", tool_name, account_type)
             api_response = {"status": "error", "message": f"Account '{account_type}' not found."}
         else:
             account_id = account_details["account_id"]
-            logger.info(f"[{tool_name}] Account ID '{account_id}' found for '{account_type}'. Fetching transactions with limit: {limit}")
+            logger.info("[%s] Account ID '%s' found for '%s'. Fetching transactions with limit: %s", tool_name, account_id, account_type, limit)
             # bigquery_functions.get_transactions_for_account returns a list of transaction dicts
             bq_transactions = bigquery_functions.get_transactions_for_account(USER_ID, account_id, limit)
-            logger.info(f"[{tool_name}] Received {len(bq_transactions)} transactions from BQ for account_id {account_id}")
+            logger.info("[%s] Received %s transactions from BQ for account_id %s", tool_name, len(bq_transactions), account_id)
 
             formatted_transactions = []
             for t in bq_transactions:
@@ -136,7 +144,7 @@ async def getTransactionHistory(account_type: str, limit: int = 10): # Default l
                 "transactions": formatted_transactions
             }
     except Exception as e:
-        logger.error(f"[{tool_name}] Error: {e}", exc_info=True)
+        logger.error("[%s] Error: %s", tool_name, e, exc_info=True)
         api_response = {"status": "error", "message": f"An internal error occurred while fetching transaction history for {account_type}."}
 
     _log_tool_event("INVOCATION_END", tool_name, params_sent, api_response)
@@ -151,8 +159,8 @@ initiateFundTransfer_declaration = types.FunctionDeclaration(
         properties={
             "amount": types.Schema(type=types.Type.NUMBER, description="The amount to transfer."),
             "currency": types.Schema(type=types.Type.STRING, description="The currency of the amount (e.g., 'INR'). This will be validated against the source account's currency."),
-            "from_account_type": types.Schema(type=types.Type.STRING, description="The type or nickname of the account to transfer from (e.g., 'current', 'Mohit Primary Current')."),
-            "to_account_type": types.Schema(type=types.Type.STRING, description="The type or nickname of the account to transfer to (e.g., 'savings', 'Mohit Savings Fund').")
+            "from_account_type": types.Schema(type=types.Type.STRING, description="The type or nickname of the account to transfer from (e.g., 'checking', 'Alex Primary Checking')."),
+            "to_account_type": types.Schema(type=types.Type.STRING, description="The type or nickname of the account to transfer to (e.g., 'savings', 'Alex Savings Fund').")
         },
         required=["amount", "currency", "from_account_type", "to_account_type"]
     )
@@ -192,7 +200,7 @@ async def initiateFundTransfer(amount: float, currency: str, from_account_type: 
             status="STARTED"
         )
         
-        logger.info(f"[{tool_name}] Initiating transfer: {amount} {currency} from '{from_account_type}' to '{to_account_type}'.")
+        logger.info("[%s] Initiating transfer: %s %s from '%s' to '%s'.", tool_name, amount, currency, from_account_type, to_account_type)
 
         # Use the initiate_fund_transfer_check function for validation
         transfer_check = bigquery_functions.initiate_fund_transfer_check(
@@ -254,7 +262,7 @@ async def initiateFundTransfer(amount: float, currency: str, from_account_type: 
             
     except Exception as e:
         error_msg = f"Error initiating fund transfer: {str(e)}"
-        logger.error(f"[{tool_name}] {error_msg}", exc_info=True)
+        logger.error("[%s] %s", tool_name, error_msg, exc_info=True)
         
         _log_tool_event(
             "ERROR",
@@ -313,7 +321,7 @@ async def executeFundTransfer(amount: float, currency: str, from_account_id: str
     }
     
     _log_tool_event("INVOCATION_START", tool_name, params_sent)
-    logger.info(f"[{tool_name}] Attempting to call bigquery_functions.execute_fund_transfer with from_account_id: {from_account_id}, to_account_id: {to_account_id}, amount: {amount}, currency: {currency}, memo: {memo}")
+    logger.info("[%s] Attempting to call bigquery_functions.execute_fund_transfer with from_account_id: %s, to_account_id: %s, amount: %s, currency: %s, memo: %s", tool_name, from_account_id, to_account_id, amount, currency, memo)
     
     api_response = {}
     try:
@@ -326,7 +334,7 @@ async def executeFundTransfer(amount: float, currency: str, from_account_id: str
             memo=memo or f"Transfer from {from_account_id} to {to_account_id}"
         )
         
-        logger.info(f"[{tool_name}] Received from bigquery_functions.execute_fund_transfer: {transfer_result}")
+        logger.info("[%s] Received from bigquery_functions.execute_fund_transfer: %s", tool_name, transfer_result)
         
         if transfer_result.get("status") == "SUCCESS":
             api_response = {
@@ -347,80 +355,12 @@ async def executeFundTransfer(amount: float, currency: str, from_account_id: str
                 "message": transfer_result.get("message", "Fund transfer execution failed.")
             }
     except Exception as e:
-        logger.error(f"[{tool_name}] Error calling BQ or processing result for executeFundTransfer: {e}", exc_info=True)
+        logger.error("[%s] Error calling BQ or processing result for executeFundTransfer: %s", tool_name, e, exc_info=True)
         api_response = {"status": "error", "message": "An internal error occurred while executing fund transfer."}
     
     _log_tool_event("INVOCATION_END", tool_name, params_sent, api_response)
     return api_response
 
-# Helper: resolve_biller_by_name (adapted for direct BQ call)
-async def resolve_biller_by_name(user_id: str, biller_name_query: str) -> dict:
-    tool_name = "_resolve_biller_by_name_helper" # Internal helper
-    params_sent = {"user_id": user_id, "biller_name_query": biller_name_query}
-    _log_tool_event("INVOCATION_START", tool_name, params_sent)
-    logger.info(f"[{tool_name}] Attempting to find biller by name/nickname '{biller_name_query}' for user {user_id}")
-
-    try:
-        # bigquery_functions.list_registered_billers returns a direct list of biller dicts
-        all_billers = bigquery_functions.list_registered_billers(user_id)
-        logger.info(f"[{tool_name}] Retrieved {len(all_billers)} billers for user {user_id}")
-
-        if not all_billers:
-            response = {"status": "ERROR_BILLER_NOT_FOUND", "message": f"No billers registered for user {user_id}."}
-            _log_tool_event("INVOCATION_END", tool_name, params_sent, response)
-            return response
-
-        normalized_query = biller_name_query.lower()
-        exact_matches = []
-        partial_matches = []
-
-        for biller in all_billers:
-            # BQ returns: biller_id, biller_nickname, account_number_at_biller, last_due_amount, last_due_date, bill_type
-            # SQL schema has biller_name, but BQ list_registered_billers does not select it. Match on biller_nickname.
-            biller_nickname = biller.get("biller_nickname", "").lower()
-
-            if biller_nickname == normalized_query:
-                exact_matches.append(biller)
-            elif normalized_query in biller_nickname:
-                partial_matches.append(biller)
-        
-        final_match = None
-        if exact_matches:
-            if len(exact_matches) == 1:
-                final_match = exact_matches[0]
-            else: # Multiple exact matches
-                options = [{"biller_id": b["biller_id"], "biller_nickname": b.get("biller_nickname")} for b in exact_matches]
-                response = {"status": "ERROR_AMBIGUOUS_BILLER", "message": f"Multiple billers found matching '{biller_name_query}'. Please be more specific.", "options": options}
-                _log_tool_event("INVOCATION_END", tool_name, params_sent, response)
-                return response
-        elif partial_matches:
-            if len(partial_matches) == 1:
-                final_match = partial_matches[0]
-            else: # Multiple partial matches
-                options = [{"biller_id": b["biller_id"], "biller_nickname": b.get("biller_nickname")} for b in partial_matches]
-                response = {"status": "ERROR_AMBIGUOUS_BILLER", "message": f"Multiple billers partially match '{biller_name_query}'. Please be more specific.", "options": options}
-                _log_tool_event("INVOCATION_END", tool_name, params_sent, response)
-                return response
-
-        if final_match:
-            response = {
-                "status": "success",
-                "biller_id": final_match["biller_id"],
-                "biller_nickname": final_match.get("biller_nickname"), # This is the field we matched on
-                "account_number_at_biller": final_match.get("account_number_at_biller"),
-                "bill_type": final_match.get("bill_type")
-            }
-        else:
-            response = {"status": "ERROR_BILLER_NOT_FOUND", "message": f"Biller '{biller_name_query}' not found."}
-
-        _log_tool_event("INVOCATION_END", tool_name, params_sent, response)
-        return response
-
-    except Exception as e:
-        logger.error(f"[{tool_name}] Error: {e}", exc_info=True)
-        error_response = {"status": "error", "message": f"Internal error resolving biller: {str(e)}"}
-        _log_tool_event("INVOCATION_END", tool_name, params_sent, error_response)
-        return error_response
 
 # 5. getBillDetails
 getBillDetails_declaration = types.FunctionDeclaration(
@@ -440,7 +380,6 @@ async def getBillDetails(payee_nickname: str = None, bill_type: str = None):
     tool_name = "getBillDetails"
     params_sent = {"payee_nickname": payee_nickname, "bill_type": bill_type}
     _log_tool_event("INVOCATION_START", tool_name, params_sent)
-    api_response = {}
 
     if not payee_nickname and not bill_type:
         api_response = {"status": "error", "message": "Please provide either a payee nickname or a bill type."}
@@ -448,164 +387,108 @@ async def getBillDetails(payee_nickname: str = None, bill_type: str = None):
         return api_response
 
     try:
-        biller_id_to_query = None
-        resolved_biller_nickname = None
+        logger.info("[%s] Calling BQ function get_bill_details with bill_type='%s', payee_nickname='%s'", tool_name, bill_type, payee_nickname)
+        bq_result = bigquery_functions.get_bill_details(bill_type=bill_type, payee_nickname=payee_nickname)
+        logger.info("[%s] Result from BQ: %s", tool_name, bq_result)
 
-        if payee_nickname:
-            logger.info(f"[{tool_name}] Resolving biller by nickname: {payee_nickname}")
-            resolution_result = await resolve_biller_by_name(USER_ID, payee_nickname)
-            if resolution_result.get("status") == "success":
-                biller_id_to_query = resolution_result["biller_id"]
-                resolved_biller_nickname = resolution_result.get("biller_nickname")
-            else:
-                api_response = resolution_result # Pass error/ambiguity from helper
-                _log_tool_event("INVOCATION_END", tool_name, params_sent, api_response)
-                return api_response
-        
-        elif bill_type: # No nickname, try by bill_type
-            logger.info(f"[{tool_name}] Listing billers to filter by type: {bill_type}")
-            all_user_billers = bigquery_functions.list_registered_billers(USER_ID)
-            matching_billers = [b for b in all_user_billers if b.get("bill_type", "").lower() == bill_type.lower()]
-
-            if not matching_billers:
-                api_response = {"status": "error", "message": f"No billers found for type '{bill_type}'."}
-                _log_tool_event("INVOCATION_END", tool_name, params_sent, api_response)
-                return api_response
-            if len(matching_billers) > 1:
-                options = [{"biller_id": b["biller_id"], "biller_nickname": b.get("biller_nickname")} for b in matching_billers]
-                api_response = {"status": "clarification_needed", "message": f"Multiple billers found for type '{bill_type}'. Please specify.", "options": options}
-                _log_tool_event("INVOCATION_END", tool_name, params_sent, api_response)
-                return api_response
-            biller_id_to_query = matching_billers[0]["biller_id"]
-            resolved_biller_nickname = matching_billers[0].get("biller_nickname")
-
-        if biller_id_to_query:
-            logger.info(f"[{tool_name}] Fetching details for biller_id: {biller_id_to_query}")
-            # bigquery_functions.get_bill_details returns dict or None
-            # Keys: "biller_nickname", "account_number_at_biller", "last_due_amount", "last_due_date", "bill_type"
-            bq_result = bigquery_functions.get_bill_details(USER_ID, biller_id_to_query)
-            logger.info(f"[{tool_name}] Received from BQ get_bill_details: {bq_result}")
-
-            if bq_result:
-                api_response = {
-                    "status": "success",
-                    "payee_id": biller_id_to_query, # This is the resolved/found biller_id
-                    "payee_nickname": bq_result.get("biller_nickname"), # From BQ direct call
-                    "account_number_at_biller": bq_result.get("account_number_at_biller"),
-                    "due_amount": bq_result.get("last_due_amount"),
-                    "due_date": bq_result.get("last_due_date"),
-                    "bill_type": bq_result.get("bill_type")
-                }
-            else:
-                api_response = {"status": "error", "message": f"Could not retrieve details for biller ID '{biller_id_to_query}'."}
-        else: # Should not happen if logic above is correct, but as a fallback
-            api_response = {"status": "error", "message": "Could not determine a biller to query."}
+        status = bq_result.get("status", "error")
+        if status == "SUCCESS":
+            api_response = {
+                "status": "success",
+                "payee_id": bq_result.get("biller_id"),
+                "payee_nickname": bq_result.get("biller_name"),
+                "due_amount": bq_result.get("due_amount"),
+                "due_date": bq_result.get("due_date"),
+                "default_payment_account_id": bq_result.get("default_payment_account_id")
+            }
+        elif status == "AMBIGUOUS_BILLER_FOUND":
+            api_response = {
+                "status": "clarification_needed",
+                "message": bq_result.get("message"),
+                "options": bq_result.get("billers")
+            }
+        else:
+            api_response = {
+                "status": "error",
+                "message": bq_result.get("message", "Failed to get bill details.")
+            }
 
     except Exception as e:
-        logger.error(f"[{tool_name}] Error: {e}", exc_info=True)
+        logger.error("[%s] Error: %s", tool_name, e, exc_info=True)
         api_response = {"status": "error", "message": "An internal error occurred while fetching bill details."}
 
     _log_tool_event("INVOCATION_END", tool_name, params_sent, api_response)
     return api_response
 
-# Helper: resolve_account_by_name (for payBill)
-async def resolve_account_by_name(user_id: str, natural_language_name: str) -> dict:
-    tool_name = "_resolve_account_by_name_helper"
-    params_sent = {"user_id": user_id, "natural_language_name": natural_language_name}
-    _log_tool_event("INVOCATION_START", tool_name, params_sent)
-    logger.info(f"[{tool_name}] Attempting to call bigquery_functions.find_account_by_natural_language for user {user_id} with name '{natural_language_name}'")
-    
-    try:
-        account_details = bigquery_functions.find_account_by_natural_language(user_id, natural_language_name)
-        logger.info(f"[{tool_name}] Received from bigquery_functions.find_account_by_natural_language: {account_details}")
-        
-        if account_details:
-            response = {"status": "success", "account": account_details}
-        else:
-            response = {"status": "ERROR_ACCOUNT_NOT_FOUND", "message": f"Account '{natural_language_name}' not found."}
-        
-        _log_tool_event("INVOCATION_END", tool_name, params_sent, response)
-        return response
-        
-    except Exception as e:
-        logger.error(f"[{tool_name}] Error calling BQ or processing result: {e}", exc_info=True)
-        error_response = {"status": "error", "message": f"An internal error occurred while resolving account name: {str(e)}"}
-        _log_tool_event("INVOCATION_END", tool_name, params_sent, error_response)
-        return error_response
 
 # 6. payBill
 payBill_declaration = types.FunctionDeclaration(
     name="payBill",
-    description="Updates the status of a bill in the biller list (e.g., sets due amount to zero and updates due date). It does NOT perform financial deduction from an account. The 'from_account_id' parameter is for logging/intent but not used for deduction by the current backend.",
+    description="Pays a bill. You can identify the bill by the biller's nickname (payee_id) or by the type of bill (bill_type, e.g., 'electricity').",
     parameters=types.Schema(
         type=types.Type.OBJECT,
         properties={
-            "payee_id": types.Schema(type=types.Type.STRING, description="The nickname or unique ID of the biller to pay. If a nickname is provided, it will be resolved to an ID."),
-            "amount": types.Schema(type=types.Type.NUMBER, description="The amount that was notionally paid. The backend will set the due amount to 0."),
-            "from_account_id": types.Schema(type=types.Type.STRING, description="Optional. The ID or natural language description (e.g., 'my savings') of the account notionally used for payment. This is for record-keeping and not used for actual deduction by the backend.")
+            "payee_id": types.Schema(type=types.Type.STRING, description="Optional. The nickname or unique ID of the biller to pay."),
+            "bill_type": types.Schema(type=types.Type.STRING, description="Optional. The type of bill to pay (e.g., 'electricity', 'internet'). Used if payee_id is not provided."),
+            "amount": types.Schema(type=types.Type.NUMBER, description="The amount to pay."),
+            "from_account_id": types.Schema(type=types.Type.STRING, description="Optional. The ID or natural language name (e.g., 'my savings') of the account to pay from.")
         },
-        required=["payee_id", "amount"]
+        required=["amount"]
     )
 )
 
-async def payBill(payee_id: str, amount: float, from_account_id: str = None): # from_account_id is optional
+async def payBill(amount: float, payee_id: str = None, bill_type: str = None, from_account_id: str = None):
     tool_name = "payBill"
-    params_sent = {"payee_id": payee_id, "amount": amount, "from_account_id": from_account_id}
+    params_sent = {"payee_id": payee_id, "bill_type": bill_type, "amount": amount, "from_account_id": from_account_id}
     _log_tool_event("INVOCATION_START", tool_name, params_sent)
     api_response = {}
     
     try:
-        logger.info(f"[{tool_name}] Attempting to pay bill for payee/biller: '{payee_id}', amount: {amount}.")
-        if from_account_id: # Try to resolve if it's a name
-            logger.info(f"[{tool_name}] 'from_account_id' provided as '{from_account_id}'. This is for logging purposes only.")
+        logger.info("[%s] Attempting to pay bill for payee_id: '%s', bill_type: '%s', amount: %s.", tool_name, payee_id, bill_type, amount)
         
-        # First, check if the payee_id is a valid biller ID
-        biller_details = bigquery_functions.get_bill_details(USER_ID, payee_id)
-        
-        if biller_details:
-            # payee_id is a valid biller ID
-            biller_id = payee_id
-            biller_nickname = biller_details.get("biller_nickname", payee_id)
-            logger.info(f"[{tool_name}] Using provided biller ID '{biller_id}' with nickname '{biller_nickname}'.")
-        else:
-            # Try to resolve payee_id as a nickname
-            logger.info(f"[{tool_name}] Payee '{payee_id}' not found as biller ID, trying to resolve as nickname...")
-            resolution_result = await resolve_biller_by_name(USER_ID, payee_id)
-            
-            if resolution_result.get("status") != "success":
-                api_response = resolution_result # Pass error/ambiguity
-                _log_tool_event("INVOCATION_END", tool_name, params_sent, api_response)
-                return api_response
-            
-            biller_id = resolution_result["biller_id"]
-            biller_nickname = resolution_result.get("biller_nickname", payee_id)
-            logger.info(f"[{tool_name}] Resolved payee '{payee_id}' to biller_id '{biller_id}' with nickname '{biller_nickname}'.")
+        if not payee_id and not bill_type:
+            api_response = {"status": "error", "message": "You must provide either a biller name (payee_id) or a bill type."}
+            _log_tool_event("INVOCATION_END", tool_name, params_sent, api_response)
+            return api_response
 
-        payment_timestamp = datetime.now(timezone.utc)
+        # The BQ function `pay_bill` handles all resolution and payment logic.
+        payment_result = bigquery_functions.pay_bill(
+            payee_id=payee_id,
+            bill_type=bill_type,
+            amount=amount,
+            from_account_id=from_account_id,
+            user_id=USER_ID
+        )
         
-        # bigquery_functions.pay_bill updates RegisteredBillers, sets due to 0, updates due date.
-        # It takes user_id, biller_nickname, payment_amount (note: BQ uses this for logging, sets due to 0), timestamp.
-        success = bigquery_functions.pay_bill(USER_ID, biller_nickname, amount, payment_timestamp)
+        logger.info("[%s] Received from bigquery_functions.pay_bill: %s", tool_name, payment_result)
         
-        if success:
+        status = payment_result.get("status", "error")
+        
+        if status == "SUCCESS":
             api_response = {
                 "status": "success",
-                "message": f"Bill for '{biller_nickname}' (ID: {biller_id}) has been marked as paid. Due amount set to 0.",
-                "biller_id": biller_id,
-                "biller_nickname": biller_nickname,
+                "message": payment_result.get("message"),
+                "biller_id": payment_result.get("biller_id"),
+                "biller_nickname": payment_result.get("biller_nickname"),
                 "amount_paid": amount,
-                "payment_timestamp": payment_timestamp.isoformat()
+                "payment_timestamp": payment_result.get("timestamp")
             }
-        else:
+        elif status == "CLARIFICATION_NEEDED":
             api_response = {
-                "status": "error", 
-                "message": f"Failed to mark bill as paid for biller '{biller_nickname}' (ID: {biller_id})."
+                "status": "clarification_needed",
+                "message": payment_result.get("message"),
+                "options": payment_result.get("options")
+            }
+        else: # Handles all other error statuses from BQ
+            api_response = {
+                "status": "error",
+                "message": payment_result.get("message", f"Failed to process payment for '{payee_id}'.")
             }
 
     except Exception as e:
-        logger.error(f"[{tool_name}] Error: {e}", exc_info=True)
+        logger.error("[%s] Error: %s", tool_name, e, exc_info=True)
         api_response = {
-            "status": "error", 
+            "status": "error",
             "message": f"An internal error occurred while processing payment: {str(e)}"
         }
 
@@ -646,9 +529,9 @@ async def registerBiller(biller_type: str, account_number: str, biller_name: str
     try:
         # Generate a unique biller_id for the new registration
         generated_biller_id = f"biller_{USER_ID.lower()}_{uuid.uuid4().hex[:8]}"
-        logger.info(f"[{tool_name}] Registering new biller. Generated biller_id: {generated_biller_id}")
-        logger.info(f"[{tool_name}] Biller name (tool input, not used by BQ): {biller_name}")
-        logger.info(f"[{tool_name}] Default payment account ID (tool input, not used by BQ): {default_payment_account_id}")
+        logger.info("[%s] Registering new biller. Generated biller_id: %s", tool_name, generated_biller_id)
+        logger.info("[%s] Biller name (tool input, not used by BQ): %s", tool_name, biller_name)
+        logger.info("[%s] Default payment account ID (tool input, not used by BQ): %s", tool_name, default_payment_account_id)
 
         # Parameters for bigquery_functions.register_biller:
         # user_id, biller_id, biller_nickname, account_number_at_biller, last_due_amount, last_due_date, bill_type
@@ -672,7 +555,7 @@ async def registerBiller(biller_type: str, account_number: str, biller_name: str
             api_response = {"status": "error", "message": "Failed to register biller."}
 
     except Exception as e:
-        logger.error(f"[{tool_name}] Error: {e}", exc_info=True)
+        logger.error("[%s] Error: %s", tool_name, e, exc_info=True)
         api_response = {"status": "error", "message": "An internal error occurred while registering biller."}
 
     _log_tool_event("INVOCATION_END", tool_name, params_sent, api_response)
@@ -706,7 +589,7 @@ async def updateBillerDetails(payee_id: str, updates: dict):
     _log_tool_event("INVOCATION_START", tool_name, params_sent)
     api_response = {}
     try:
-        logger.info(f"[{tool_name}] Updating biller ID '{payee_id}' with updates: {updates}")
+        logger.info("[%s] Updating biller ID '%s' with updates: %s", tool_name, payee_id, updates)
 
         # Parameters for bigquery_functions.update_biller_details:
         # user_id, biller_id, new_biller_nickname=None, new_account_number_at_biller=None
@@ -731,7 +614,7 @@ async def updateBillerDetails(payee_id: str, updates: dict):
             api_response = {"status": "error", "message": f"Failed to update biller '{payee_id}'."}
 
     except Exception as e:
-        logger.error(f"[{tool_name}] Error: {e}", exc_info=True)
+        logger.error("[%s] Error: %s", tool_name, e, exc_info=True)
         api_response = {"status": "error", "message": "An internal error occurred while updating biller details."}
 
     _log_tool_event("INVOCATION_END", tool_name, params_sent, api_response)
@@ -756,7 +639,7 @@ async def removeBiller(payee_id: str):
     _log_tool_event("INVOCATION_START", tool_name, params_sent)
     api_response = {}
     try:
-        logger.info(f"[{tool_name}] Removing biller ID: {payee_id}")
+        logger.info("[%s] Removing biller ID: %s", tool_name, payee_id)
         # bigquery_functions.remove_biller takes user_id, biller_id
         success = bigquery_functions.remove_biller(USER_ID, payee_id) # payee_id from tool is biller_id for BQ
 
@@ -765,7 +648,7 @@ async def removeBiller(payee_id: str):
         else:
             api_response = {"status": "error", "message": f"Failed to remove biller '{payee_id}'. It might not exist or an error occurred."}
     except Exception as e:
-        logger.error(f"[{tool_name}] Error: {e}", exc_info=True)
+        logger.error("[%s] Error: %s", tool_name, e, exc_info=True)
         api_response = {"status": "error", "message": "An internal error occurred while removing biller."}
 
     _log_tool_event("INVOCATION_END", tool_name, params_sent, api_response)
@@ -787,19 +670,19 @@ async def listRegisteredBillers():
     _log_tool_event("INVOCATION_START", tool_name, params_sent)
     api_response = {}
     try:
-        logger.info(f"[{tool_name}] Listing all registered billers for user {USER_ID}")
+        logger.info("[%s] Listing all registered billers for user %s", tool_name, USER_ID)
         # bigquery_functions.list_registered_billers returns a direct list of biller dicts
         # Keys: "biller_id", "biller_nickname", "account_number_at_biller", "last_due_amount", "last_due_date", "bill_type"
         # SQL schema has "biller_name", but BQ function does not select it.
         bq_billers = bigquery_functions.list_registered_billers(USER_ID)
-        logger.info(f"[{tool_name}] Received {len(bq_billers)} billers from BQ.")
+        logger.info("[%s] Received %s billers from BQ.", tool_name, len(bq_billers))
 
         api_response = {
             "status": "success",
             "billers": bq_billers # Pass the list directly as per BQ function's output structure
         }
     except Exception as e:
-        logger.error(f"[{tool_name}] Error: {e}", exc_info=True)
+        logger.error("[%s] Error: %s", tool_name, e, exc_info=True)
         api_response = {"status": "error", "message": "An internal error occurred while listing registered billers."}
 
     _log_tool_event("INVOCATION_END", tool_name, params_sent, api_response)
@@ -888,7 +771,7 @@ async def search_faq(search_query: str) -> str:
         return "I couldn't find specific information about that. Would you like me to connect you with a customer service representative?"
         
     except Exception as e:
-        logger.error(f"Error in search_faq: {str(e)}")
+        logger.error("Error in search_faq: %s", str(e))
         return "I'm having trouble accessing the FAQ system right now. Please try again later or contact customer support at 1800-123-1234."
 # Function Declaration for search_faq
 search_faq_declaration = types.FunctionDeclaration(

@@ -1,536 +1,421 @@
-# backend/bigquery_functions.py
 import os
-import uuid
-from datetime import datetime, timezone, timedelta
-from typing import List, Dict, Any, Optional, Union, Tuple
-import logging
 from google.cloud import bigquery
-from google.cloud.bigquery import ScalarQueryParameter
-from google.api_core.exceptions import GoogleAPICallError, BadRequest
-from google.oauth2 import service_account
-from datetime import datetime, date
+import datetime
+import uuid
+import logging
+import sys # Added to redirect logger to stdout
+import json # For structured logging of parameters and results
+from dotenv import load_dotenv
 
-# Set up logging
-logger = logging.getLogger(__name__)
 
-# --- Configuration ---
-# Ensure GOOGLE_APPLICATION_CREDENTIALS is set in your environment,
-# or uncomment and configure direct credential loading if needed.
-SERVICE_ACCOUNT_FILE = os.getenv('GOOGLE_APPLICATION_CREDENTIALS') # Example custom env var
-PROJECT_ID = "account-pocs" # Explicitly set project ID if not default
-LOCATION = "global" # Location for Discovery Engine API
-# if SERVICE_ACCOUNT_FILE:
-#     creds = service_account.Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE)
-#     client = bigquery.Client(credentials=creds, project=PROJECT_ID if PROJECT_ID else None)
-# else:
-#     client = bigquery.Client(project=PROJECT_ID if PROJECT_ID else None)
 
+
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Configure logging
+# Ensure a logger instance is used for more control if needed, but basicConfig is fine for now.
+# For file-based logging, a FileHandler could be added here.
+# For now, stdout logging as configured is acceptable per instructions.
+logging.basicConfig(
+    stream=sys.stdout, # Direct logs to stdout
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(name)s - %(funcName)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__) # Use a specific logger for this module
+
+# Global store for logs
+GLOBAL_LOG_STORE = []
+ 
+CREDENTIALS_PATH = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+GOOGLE_CLOUD_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT")
+
+# Initialize BigQuery Client
+# Ensure GOOGLE_APPLICATION_CREDENTIALS environment variable is set.
+# For local development, you might set it like this:
+# os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "path/to/your/service-account-file.json"
+# In a deployed environment (e.g., Google Cloud Run/Functions), this is often handled automatically.
 try:
-    # Assumes ADC or default credentials are set up
-    # client = bigquery.Client(project="account-pocs", credentials=service_account.Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE))
-    client = bigquery.Client()
+    # client = bigquery.Client(project=GOOGLE_CLOUD_PROJECT, credentials=service_account.Credentials.from_service_account_file(CREDENTIALS_PATH))
+    client = bigquery.Client(project="account-pocs")
+    # Attempt a simple query to verify connection and credentials
+    # This also helps in resolving the project ID if not explicitly set
+    if client.project:
+        logger.info("\033[92mBigQuery client initialized successfully for project: %s.\033[0m", client.project)
+    else: # Should not happen if client init is successful without error
+        logger.warning("BigQuery client initialized, but project ID could not be determined automatically.")
+    # client.query("SELECT 1").result() # Optional: verify with a query
 except Exception as e:
-    print(f"Error initializing BigQuery client: {e}")
-    print("Ensure GOOGLE_APPLICATION_CREDENTIALS is set or you are in a GCP environment with appropriate permissions.")
+    logger.error("Failed to initialize BigQuery client: %s", e, exc_info=True) # Added exc_info=True
+    # Fallback or raise an error if the client is essential for the module to load
     client = None
 
+# Placeholder for User ID - replace with actual authentication mechanism later
+USER_ID = "user_krishnan_001"
 
-DATASET_ID = "hdfc_voice_assistant" # UPDATED
-USER_ID = "Mohit" # Hardcoded for example purposes, as in original
+# Determine Project ID and Dataset ID
+# Use GOOGLE_CLOUD_PROJECT env var if set, otherwise try to get from initialized client
+PROJECT_ID = os.getenv("GOOGLE_CLOUD_PROJECT")
+if not PROJECT_ID and client:
+    PROJECT_ID = client.project
+if not PROJECT_ID:
+    logger.warning("GOOGLE_CLOUD_PROJECT environment variable not set and client.project is unavailable. Using placeholder 'your-gcp-project-id'. Table references might be incorrect.")
+    PROJECT_ID = "your-gcp-project-id" # Fallback placeholder
 
-GLOBAL_LOG_STORE = []
-# --- Helper Functions ---
+DATASET_ID = "bank_voice_assistant_dataset" # Assuming the dataset name from bigquery_setup.sql
 
-def log_bq_interaction(function_name, parameters, query_str=None, status=None, result_summary=None, error_message=None):
-    """
-    Helper function to log BigQuery interactions for debugging and monitoring.
-    
-    Args:
-        function_name: Name of the function making the query
-        parameters: Parameters used in the query
-        query_str: The SQL query string (optional)
-        status: Status of the operation (SUCCESS, ERROR_*, etc.)
-        result_summary: Summary of the result (optional)
-        error_message: Error message if applicable (optional)
-    """
-    log_payload = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "log_type": "BIGQUERY_INTERACTION",
-        "function": function_name,
-        "parameters": parameters
+# --- Structured Logging Helper ---
+def log_bq_interaction(func_name: str, params: dict, query: str = None, status: str = "N/A", result_summary: str = None, error_message: str = None):
+    """Helper function for structured logging of BigQuery interactions."""
+    log_entry = {
+        "operation": func_name,
+        "parameters": params,
+        "query": query if query else "N/A",
+        "status": status,
     }
+    if result_summary is not None: # Could be a success message or data summary
+        log_entry["result_summary"] = result_summary
+    if error_message:
+        log_entry["error_message"] = error_message
     
-    if query_str is not None:
-        log_payload["query"] = query_str
-    if status is not None:
-        log_payload["status"] = status
-    if result_summary is not None:
-        log_payload["result_summary"] = result_summary
-    if error_message is not None:
-        log_payload["error_message"] = error_message
+    # Using logger.info for all structured logs for simplicity,
+    # the 'status' field within the JSON will indicate success/failure.
+    # Alternatively, use logger.error for failed statuses.
+    
+    # Store the log entry in the global list
+    GLOBAL_LOG_STORE.append(log_entry)
+
+    if "ERROR" in status.upper() or "FAIL" in status.upper():
+        logger.error(json.dumps(log_entry)) # Error logs remain default color
+    else:
+        logger.info("\033[92m%s\033[0m", json.dumps(log_entry)) # Successful BQ interactions in green
+
+# Helper to construct full table IDs
+def _table_ref(table_name: str) -> str:
+    if PROJECT_ID == "your-gcp-project-id": # Check if using placeholder
+        # This is a less safe fallback if project ID couldn't be determined
+        logger.warning("Using fallback table reference for %s as PROJECT_ID is a placeholder.", table_name)
+        return f"`{DATASET_ID}.{table_name}`"
+    return f"`{PROJECT_ID}.{DATASET_ID}.{table_name}`"
+
+def test_bigquery_connection():
+    """
+    Tests the BigQuery connection by executing a simple query.
+    Logs success or failure.
+    """
+    func_name = "test_bigquery_connection"
+    params = {}
+    # Using a very simple query that doesn't rely on specific tables initially
+    query_str = "SELECT 1 AS test_column"
+    logger.info("[%s] Attempting to test BigQuery connection.", func_name)
+
+    if not client:
+        log_message = "BigQuery client is not initialized. Cannot perform connection test."
+        logger.error("[%s] %s", func_name, log_message)
+        # Manual log for consistency if needed
+        GLOBAL_LOG_STORE.append({
+            "operation": func_name, "parameters": params, "query": query_str,
+            "status": "ERROR_CLIENT_NOT_INITIALIZED", "error_message": log_message
+        })
+        return {"status": "ERROR_CLIENT_NOT_INITIALIZED", "message": log_message}
+
+    try:
+        logger.info("\033[92m[%s] Executing test query: %s\033[0m", func_name, query_str)
+        query_job = client.query(query_str)
+        results = query_job.result()  # Waits for the job to complete.
         
-    logger.info(f"[{function_name}] {status or 'QUERY'}: {result_summary or error_message or 'Executing query'}")
-    GLOBAL_LOG_STORE.append(log_payload)
-def _table_ref(table_name: str) -> bigquery.TableReference | None:
-    """Creates a BigQuery table reference."""
-    if not client:
-        print("BigQuery client not initialized. Cannot create table reference.")
-        return None
-    return client.dataset(DATASET_ID).table(table_name)
-
-def _execute_query(query: str, params: list = None) -> bigquery.table.RowIterator | None:
-    """Executes a DQL query and returns results."""
-    if not client:
-        print("BigQuery client not initialized. Cannot execute query.")
-        return None
-    try:
-        job_config = bigquery.QueryJobConfig()
-        if params:
-            job_config.query_parameters = params
-        query_job = client.query(query, job_config=job_config)
-        return query_job.result()
-    except Exception as e:
-        print(f"Error executing query: {e}")
-        print(f"Query: {query}")
-        if params:
-            print(f"Params: {[p.name + ': ' + str(p.value) for p in params]}")
-        return None
-
-def _execute_dml(query: str, params: list = None) -> bool:
-    """Executes a DML query and returns success status."""
-    if not client:
-        print("BigQuery client not initialized. Cannot execute DML.")
-        return False
-    try:
-        job_config = bigquery.QueryJobConfig()
-        if params:
-            job_config.query_parameters = params
-        query_job = client.query(query, job_config=job_config)
-        query_job.result() # Wait for DML to complete
-        if query_job.errors:
-            print(f"DML query failed with errors: {query_job.errors}")
-            return False
-        return True
-    except Exception as e:
-        print(f"Error executing DML: {e}")
-        print(f"Query: {query}")
-        if params:
-            print(f"Params: {[p.name + ': ' + str(p.value) for p in params]}")
-        return False
-
-# --- Account Functions ---
-def get_accounts_for_user(user_id: str) -> list:
-    """
-    Retrieves all accounts for a given user.
-
-    Args:
-        user_id (str): The ID of the user.
-
-    Returns:
-        list: A list of dictionaries, where each dictionary represents an account
-              with keys: "account_id", "account_type", "balance", "account_nickname".
-    """
-    table = _table_ref('Accounts')
-    if not table: return []
-    query = f"""
-        SELECT account_id, account_type, balance, account_nickname
-        FROM `{table}`
-        WHERE user_id = @user_id
-    """
-    params = [bigquery.ScalarQueryParameter("user_id", "STRING", user_id)]
-    results = _execute_query(query, params)
-    accounts = []
-    if results:
+        data_val = None
         for row in results:
-            accounts.append({
-                "account_id": row.account_id,
-                "account_type": row.account_type,
-                "balance": row.balance,
-                "account_nickname": row.account_nickname
-            })
-    return accounts
+            data_val = row.test_column # Access the aliased column
+            break
 
-def find_account_by_natural_language(user_id: str, account_name_or_type: str) -> dict | None:
+        result_summary = f"Test query successful. Result: {data_val}"
+        logger.info("\033[92m[%s] %s\033[0m", func_name, result_summary)
+        log_bq_interaction(func_name, params, query_str, status="SUCCESS", result_summary=result_summary)
+        return {"status": "SUCCESS", "message": result_summary, "data": data_val}
+    except Exception as e:
+        error_message = f"BigQuery connection test failed: {str(e)}"
+        # Log with full traceback here
+        logger.error("[%s] %s", func_name, error_message, exc_info=True)
+        log_bq_interaction(func_name, params, query_str, status="ERROR_QUERY_FAILED", error_message=error_message)
+        return {"status": "ERROR_QUERY_FAILED", "message": error_message}
+
+def _get_account_details(account_type: str, user_id: str) -> dict:
     """
-    Finds a specific account for a user based on a natural language query
-    matching account type or nickname, with synonym mapping for account types.
-
-    Args:
-        user_id (str): The user's ID.
-        account_name_or_type (str): A natural language phrase that might contain
-                                    the account nickname or type.
-
-    Returns:
-        dict: The account dictionary if a match is found, otherwise None.
-              Account dictionary keys: "account_id", "account_type", "balance", "account_nickname".
+    Helper function to retrieve account_id, balance, and currency for a given account_type and user_id.
     """
-    accounts = get_accounts_for_user(user_id)
-    if not account_name_or_type:
-        return None
-
-    normalized_query = account_name_or_type.lower()
-
-    ACCOUNT_TYPE_SYNONYMS = {
-        "checking": "current",
-        "checking account": "current",
-        "current account": "current",
-        "savings": "savings",
-        "savings account": "savings",
-    }
-
-    # 1. Exact match on nickname
-    for account in accounts:
-        if account.get("account_nickname") and \
-           normalized_query == account["account_nickname"].lower():
-            return account
-
-    # 2. Synonym-based exact account type match
-    canonical_type_from_synonym = ACCOUNT_TYPE_SYNONYMS.get(normalized_query)
-    if canonical_type_from_synonym:
-        for account in accounts:
-            if account.get("account_type") and \
-               account["account_type"].lower() == canonical_type_from_synonym:
-                return account
-
-    # 3. Partial original query match against account type
-    for account in accounts:
-        if account.get("account_type") and \
-           normalized_query in account["account_type"].lower():
-            return account
-
-    # 4. Partial original query match against account nickname
-    for account in accounts:
-        if account.get("account_nickname") and \
-           normalized_query in account["account_nickname"].lower():
-            return account
-            
-    return None
-
-
-def _get_account_by_type(account_type: str, user_id: str) -> dict:
-    """
-    Helper function to get account details by account type.
-    
-    Args:
-        account_type: The account type to look up (e.g., 'Current', 'Savings')
-        user_id: The ID of the user who owns the account
-        
-    Returns:
-        dict: Account details if found, error dict otherwise
-    """
-    func_name = "_get_account_by_type"
+    func_name = "_get_account_details"
     params = {"account_type": account_type, "user_id": user_id}
+    query_str = None
     
     if not client:
-        log_bq_interaction(func_name, params, status="ERROR_CLIENT_NOT_INITIALIZED", 
-                         error_message="BigQuery client not available.")
+        log_bq_interaction(func_name, params, status="ERROR_CLIENT_NOT_INITIALIZED", error_message="BigQuery client not available.")
         return {"status": "ERROR_CLIENT_NOT_INITIALIZED", "message": "BigQuery client not available."}
 
     accounts_table = _table_ref("Accounts")
-    
-    # Normalize account type for case-insensitive comparison
-    normalized_account_type = account_type.lower().capitalize()
-    
     query_str = f"""
-        SELECT account_id, balance, currency, account_type, account_nickname
+        SELECT account_id, balance, currency
         FROM {accounts_table}
-        WHERE LOWER(account_type) = LOWER(@account_type) AND user_id = @user_id
+        WHERE user_id = @user_id AND account_type = @account_type
         LIMIT 1
     """
-    
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
-            bigquery.ScalarQueryParameter("account_type", "STRING", normalized_account_type),
-            bigquery.ScalarQueryParameter("user_id", "STRING", user_id)
+            bigquery.ScalarQueryParameter("user_id", "STRING", user_id),
+            bigquery.ScalarQueryParameter("account_type", "STRING", account_type),
         ]
     )
-    
     try:
         query_job = client.query(query_str, job_config=job_config)
         results = query_job.result()
-        
         row_data = None
-        for row in results:
+        for row in results: # Should be at most one row due to LIMIT 1
             row_data = {
-                "status": "SUCCESS",
                 "account_id": row.account_id,
                 "balance": float(row.balance),
                 "currency": row.currency,
-                "account_type": row.account_type,
-                "account_name": row.account_nickname or f"{row.account_type} Account"
+                "account_type": account_type
             }
-            break
-            
-        if row_data:
-            log_bq_interaction(func_name, params, query_str, status="SUCCESS", 
-                             result_summary=f"Account found: {row_data['account_id']} for type {account_type}")
-            return row_data
-        else:
-            error_msg = f"Account type '{account_type}' not found for user '{user_id}'"
-            log_bq_interaction(func_name, params, query_str, status="ERROR_ACCOUNT_NOT_FOUND", 
-                             error_message=error_msg)
-            return {"status": "ERROR_ACCOUNT_NOT_FOUND", "message": error_msg}
-            
-    except Exception as e:
-        error_msg = f"Error getting account by type: {str(e)}"
-        logger.error(f"[{func_name}] {error_msg}", exc_info=True)
-        log_bq_interaction(func_name, params, query_str, status="ERROR_QUERY_FAILED", 
-                         error_message=error_msg)
-        return {"status": "ERROR_QUERY_FAILED", "message": error_msg}
-
-
-def _get_account_balance_by_id(account_id: str, user_id: str) -> dict:
-    """
-    Helper function to get account balance and currency by account ID.
-    
-    Args:
-        account_id: The account ID to look up
-        user_id: The ID of the user who owns the account
+            break # Found the account
         
-    Returns:
-        dict: Account details if found, error dict otherwise
-    """
-    func_name = "_get_account_balance_by_id"
-    params = {"account_id": account_id, "user_id": user_id}
-    
-    if not client:
-        log_bq_interaction(func_name, params, status="ERROR_CLIENT_NOT_INITIALIZED", 
-                         error_message="BigQuery client not available.")
-        return {"status": "ERROR_CLIENT_NOT_INITIALIZED", "message": "BigQuery client not available."}
+        if row_data:
+            log_bq_interaction(func_name, params, query_str, status="SUCCESS", result_summary=f"Account found: {row_data['account_id']}")
+            return {"status": "SUCCESS", **row_data}
+        else:
+            log_bq_interaction(func_name, params, query_str, status="ERROR_ACCOUNT_NOT_FOUND", error_message=f"Account type '{account_type}' not found for user '{user_id}'.")
+            return {"status": "ERROR_ACCOUNT_NOT_FOUND", "message": f"Account type '{account_type}' not found for user '{user_id}'."}
+    except Exception as e:
+        logger.error("Exception details in %s: %s", func_name, str(e), exc_info=True) # Added exc_info=True
+        log_bq_interaction(func_name, params, query_str, status="ERROR_QUERY_FAILED", error_message=str(e))
+        # The original logging.error is now covered by log_bq_interaction if status is error
+        return {"status": "ERROR_QUERY_FAILED", "message": str(e)}
 
-    accounts_table = _table_ref("Accounts")
-    query_str = f"""
-        SELECT account_id, balance, currency, account_type, account_nickname
-        FROM {accounts_table}
-        WHERE account_id = @account_id AND user_id = @user_id
-        LIMIT 1
+
+def get_account_balance(account_type: str) -> dict:
     """
-    
+    Queries the Accounts table for the balance of a specific account type for the USER_ID.
+    Returns:
+        dict: {"account_type": "checking", "balance": 1250.75, "currency": "USD", "account_id": "acc_chk_krishnan_001"}
+              or an error message.
+    """
+    details = _get_account_details(account_type, USER_ID)
+    if details["status"] == "SUCCESS":
+        return {
+            "account_type": account_type, # Already in details, but spec asks for it explicitly
+            "balance": details["balance"],
+            "currency": details["currency"],
+            "account_id": details["account_id"]
+        }
+    return details # Return the error message from helper
+
+
+def get_transaction_history(account_type: str, limit: int = 5) -> list:
+    """
+    Fetches transaction history for a given account_type for the default USER_ID.
+    """
+    func_name = "get_transaction_history"
+    params = {"account_type": account_type, "limit": limit, "user_id": USER_ID}
+    query_str = None
+
+    if not client:
+        log_bq_interaction(func_name, params, status="ERROR_CLIENT_NOT_INITIALIZED", error_message="BigQuery client not available.")
+        return [{"status": "ERROR_CLIENT_NOT_INITIALIZED", "message": "BigQuery client not available."}]
+
+    # _get_account_details already logs its interaction
+    account_details = _get_account_details(account_type, USER_ID)
+    if account_details["status"] != "SUCCESS":
+        # Log this specific failure context for get_transaction_history
+        log_bq_interaction(func_name, params, status=account_details["status"], error_message=f"Failed to get account details for {account_type}: {account_details.get('message')}")
+        return [account_details]
+
+    account_id = account_details["account_id"]
+    transactions_table = _table_ref("Transactions")
+
+    query_str = f"""
+        SELECT transaction_id, date, description, amount, currency, type
+        FROM {transactions_table}
+        WHERE account_id = @account_id
+        ORDER BY date DESC
+        LIMIT @limit
+    """
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
             bigquery.ScalarQueryParameter("account_id", "STRING", account_id),
-            bigquery.ScalarQueryParameter("user_id", "STRING", user_id)
+            bigquery.ScalarQueryParameter("limit", "INT64", limit),
         ]
     )
-    
     try:
         query_job = client.query(query_str, job_config=job_config)
         results = query_job.result()
-        
-        row_data = None
+        transactions_data = []
         for row in results:
-            row_data = {
-                "status": "SUCCESS",
-                "account_id": row.account_id,
-                "balance": float(row.balance),
+            transactions_data.append({
+                "transaction_id": row.transaction_id,
+                "date": row.date.isoformat() if isinstance(row.date, (datetime.datetime, datetime.date)) else str(row.date),
+                "description": row.description,
+                "amount": float(row.amount),
                 "currency": row.currency,
-                "account_type": row.account_type,
-                "account_name": row.account_nickname or f"{row.account_type} Account"
-            }
-            break
-            
-        if row_data:
-            log_bq_interaction(func_name, params, query_str, status="SUCCESS", 
-                             result_summary=f"Account found: {row_data['account_id']}")
-            return row_data
-        else:
-            error_msg = f"Account ID '{account_id}' not found for user '{user_id}'"
-            log_bq_interaction(func_name, params, query_str, status="ERROR_ACCOUNT_NOT_FOUND", 
-                             error_message=error_msg)
-            return {"status": "ERROR_ACCOUNT_NOT_FOUND", "message": error_msg}
-            
+                "type": row.type
+            })
+        
+        if not transactions_data:
+            log_bq_interaction(func_name, params, query_str, status="NO_TRANSACTIONS_FOUND", result_summary=f"No transactions found for account {account_id}.")
+            return [{"status": "NO_TRANSACTIONS_FOUND", "message": f"No transactions found for account {account_id} (type: {account_type})."}]
+        
+        log_bq_interaction(func_name, params, query_str, status="SUCCESS", result_summary=f"Retrieved {len(transactions_data)} transaction(s).")
+        return transactions_data
     except Exception as e:
-        error_msg = f"Error getting account balance: {str(e)}"
-        logger.error(f"[{func_name}] {error_msg}", exc_info=True)
-        log_bq_interaction(func_name, params, query_str, status="ERROR_QUERY_FAILED", 
-                         error_message=error_msg)
-        return {"status": "ERROR_QUERY_FAILED", "message": error_msg}
+        logger.error("Exception details in %s: %s", func_name, str(e), exc_info=True) # Added exc_info=True
+        log_bq_interaction(func_name, params, query_str, status="ERROR_QUERY_FAILED", error_message=str(e))
+        return [{"status": "ERROR_QUERY_FAILED", "message": str(e)}]
 
 
 def initiate_fund_transfer_check(from_account_type: str, to_account_type: str, amount: float) -> dict:
     """
     Checks if a fund transfer is possible between two account types for the USER_ID.
-    
-    Args:
-        from_account_type: The type of account to transfer from (e.g., 'Current', 'Savings')
-        to_account_type: The type of account to transfer to (e.g., 'Current', 'Savings')
-        amount: The amount to transfer (must be positive)
-        
-    Returns:
-        dict: Status and details of the transfer check
     """
     func_name = "initiate_fund_transfer_check"
-    params = {"from_account_type": from_account_type, 
-             "to_account_type": to_account_type, 
-             "amount": amount,
-             "user_id": USER_ID}
-    
-    if not client:
-        return {"status": "ERROR_CLIENT_NOT_INITIALIZED", 
-                "message": "BigQuery client not available."}
-    
+    params = {"from_account_type": from_account_type, "to_account_type": to_account_type, "amount": amount, "user_id": USER_ID}
+
     if not isinstance(amount, (int, float)) or amount <= 0:
-        return {"status": "ERROR_INVALID_AMOUNT", 
-                "message": "Transfer amount must be a positive number."}
+        log_bq_interaction(func_name, params, status="ERROR_INVALID_AMOUNT", error_message="Transfer amount must be a positive number.")
+        return {"status": "ERROR_INVALID_AMOUNT", "message": "Transfer amount must be a positive number."}
+
+    # _get_account_details logs its own interactions
+    from_account_details = _get_account_details(from_account_type, USER_ID)
+    if from_account_details["status"] != "SUCCESS":
+        err_msg = f"From account ('{from_account_type}'): {from_account_details.get('message', 'Error fetching details.')}"
+        log_bq_interaction(func_name, params, status=from_account_details["status"], error_message=err_msg)
+        return {"status": from_account_details["status"], "message": err_msg}
+
+    to_account_details = _get_account_details(to_account_type, USER_ID)
+    if to_account_details["status"] != "SUCCESS":
+        err_msg = f"To account ('{to_account_type}'): {to_account_details.get('message', 'Error fetching details.')}"
+        log_bq_interaction(func_name, params, status=to_account_details["status"], error_message=err_msg)
+        return {"status": to_account_details["status"], "message": err_msg}
+
+    from_account_id = from_account_details["account_id"]
+    from_balance = from_account_details["balance"]
+    to_account_id = to_account_details["account_id"]
+
+    if from_account_id == to_account_id:
+        log_bq_interaction(func_name, params, status="ERROR_SAME_ACCOUNT", error_message="Cannot transfer funds to the same account ID.")
+        return {"status": "ERROR_SAME_ACCOUNT", "message": "Cannot transfer funds to the same account type, resulting in the same account ID."}
     
-    try:
-        # Get source account details by account type
-        from_account = _get_account_by_type(from_account_type, USER_ID)
-        if from_account.get("status") != "SUCCESS":
-            return from_account
-            
-        # Get destination account details by account type
-        to_account = _get_account_by_type(to_account_type, USER_ID)
-        if to_account.get("status") != "SUCCESS":
-            return to_account
-            
-        # Check if accounts are the same
-        if from_account["account_id"] == to_account["account_id"]:
-            return {"status": "ERROR_SAME_ACCOUNT", 
-                    "message": "Cannot transfer to the same account."}
-        
-        # Check if source has sufficient balance
-        if from_account["balance"] < amount:
-            return {
-                "status": "INSUFFICIENT_FUNDS",
-                "message": f"Insufficient funds. Available: {from_account['balance']} {from_account['currency']}",
-                "current_balance": from_account["balance"],
-                "requested_amount": amount,
-                "currency": from_account["currency"],
-                "from_account_id": from_account["account_id"],
-                "to_account_id": to_account["account_id"]
-            }
-            
-        # All checks passed
-        return {
-            "status": "SUFFICIENT_FUNDS",
-            "from_account_id": from_account["account_id"],
-            "from_account_name": from_account.get("account_name", from_account_type),
-            "to_account_id": to_account["account_id"],
-            "to_account_name": to_account.get("account_name", to_account_type),
-            "currency": from_account["currency"],
-            "amount": amount,
-            "message": "Transfer check successful. Ready to execute."
+    result_data = {}
+    if from_balance >= amount:
+        status = "SUFFICIENT_FUNDS"
+        result_data = {
+            "from_account_id": from_account_id, "to_account_id": to_account_id,
+            "from_account_balance": from_balance, "transfer_amount": amount,
+            "currency": from_account_details["currency"]
         }
-        
-    except Exception as e:
-        error_msg = f"Error during transfer check: {str(e)}"
-        logger.error(f"[{func_name}] {error_msg}", exc_info=True)
-        return {"status": "ERROR_EXCEPTION", 
-                "message": f"An error occurred during transfer check: {str(e)}"}
+        log_bq_interaction(func_name, params, status=status, result_summary=f"Sufficient funds. From: {from_account_id}, To: {to_account_id}, Amount: {amount}")
+    else:
+        status = "INSUFFICIENT_FUNDS"
+        result_data = {
+            "current_balance": from_balance, "from_account_id": from_account_id,
+            "to_account_id": to_account_id, "requested_amount": amount,
+            "currency": from_account_details["currency"]
+        }
+        log_bq_interaction(func_name, params, status=status, error_message=f"Insufficient funds. Has: {from_balance}, Needs: {amount}")
+    
+    return {"status": status, **result_data}
 
 
 def execute_fund_transfer(from_account_id: str, to_account_id: str, amount: float, currency: str, memo: str) -> dict:
     """
-    Executes a fund transfer between two accounts as an atomic operation.
-    
-    Args:
-        from_account_id: The account ID to transfer from
-        to_account_id: The account ID to transfer to
-        amount: The amount to transfer (must be positive)
-        currency: The currency of the transfer
-        memo: A memo/description for the transaction
-        
-    Returns:
-        dict: Status and details of the transfer
+    Executes a fund transfer by updating account balances and recording transactions in BigQuery.
+    Operations are performed within a multi-statement transaction for atomicity.
     """
     func_name = "execute_fund_transfer"
-    params = {
-        "from_account_id": from_account_id,
-        "to_account_id": to_account_id,
-        "amount": amount,
-        "currency": currency,
-        "memo": memo,
-        "user_id": USER_ID
-    }
-    
+    params = {"from_account_id": from_account_id, "to_account_id": to_account_id, "amount": amount, "currency": currency, "memo": memo, "user_id": USER_ID}
+    query_str = None # Will hold the multi-statement query
+
     if not client:
-        log_bq_interaction(func_name, params, status="ERROR_CLIENT_NOT_INITIALIZED", 
-                         error_message="BigQuery client not available.")
-        return {"status": "ERROR_CLIENT_NOT_INITIALIZED", 
-                "message": "BigQuery client not available."}
-    
+        log_bq_interaction(func_name, params, status="ERROR_CLIENT_NOT_INITIALIZED", error_message="BigQuery client not available.")
+        return {"status": "ERROR_CLIENT_NOT_INITIALIZED", "message": "BigQuery client not available."}
+
     if not isinstance(amount, (int, float)) or amount <= 0:
-        return {"status": "ERROR_INVALID_AMOUNT", 
-                "message": "Transfer amount must be a positive number."}
-    
+        log_bq_interaction(func_name, params, status="ERROR_INVALID_AMOUNT", error_message="Transfer amount must be a positive number.")
+        return {"status": "ERROR_INVALID_AMOUNT", "message": "Transfer amount must be a positive number."}
+
     if from_account_id == to_account_id:
-        return {"status": "ERROR_SAME_ACCOUNT", 
-                "message": "Cannot transfer to the same account."}
-    
+        log_bq_interaction(func_name, params, status="ERROR_SAME_ACCOUNT", error_message="Cannot execute transfer to the same account ID.")
+        return {"status": "ERROR_SAME_ACCOUNT", "message": "Cannot transfer funds to the same account."}
+
     # Fetch account details for validation
-    from_account = _get_account_balance_by_id(from_account_id, USER_ID)
-    if from_account.get("status") != "SUCCESS":
-        return from_account
-        
-    to_account = _get_account_balance_by_id(to_account_id, USER_ID)
-    if to_account.get("status") != "SUCCESS":
-        return to_account
-    
-    # Validate currencies match
-    if from_account["currency"] != currency or to_account["currency"] != currency:
+    from_account_details = get_account_balance_by_id(from_account_id, USER_ID)
+    if from_account_details["status"] != "SUCCESS":
+        err_msg = f"Sender account '{from_account_id}' not found or error: {from_account_details.get('message')}"
+        log_bq_interaction(func_name, params, status="ERROR_FROM_ACCOUNT_INVALID", error_message=err_msg)
+        return {"status": "ERROR_FROM_ACCOUNT_INVALID", "message": err_msg}
+
+    to_account_details = get_account_balance_by_id(to_account_id, USER_ID)
+    if to_account_details["status"] != "SUCCESS":
+        err_msg = f"Recipient account '{to_account_id}' not found or error: {to_account_details.get('message')}"
+        log_bq_interaction(func_name, params, status="ERROR_TO_ACCOUNT_INVALID", error_message=err_msg)
+        return {"status": "ERROR_TO_ACCOUNT_INVALID", "message": err_msg}
+
+    if from_account_details["currency"] != currency or to_account_details["currency"] != currency:
+        err_msg = (f"Currency mismatch. Transfer currency: {currency}, "
+                   f"Sender account ({from_account_id}) currency: {from_account_details['currency']}, "
+                   f"Recipient account ({to_account_id}) currency: {to_account_details['currency']}.")
+        log_bq_interaction(func_name, params, status="ERROR_CURRENCY_MISMATCH", error_message=err_msg)
+        return {"status": "ERROR_CURRENCY_MISMATCH", "message": err_msg}
+
+    if from_account_details["balance"] < amount:
+        err_msg = f"Insufficient funds in sender account '{from_account_id}'. Has: {from_account_details['balance']} {currency}, Needs: {amount} {currency}"
+        log_bq_interaction(func_name, params, status="ERROR_INSUFFICIENT_FUNDS", error_message=err_msg)
         return {
-            "status": "ERROR_CURRENCY_MISMATCH",
-            "message": f"Currency mismatch. From: {from_account['currency']}, To: {to_account['currency']}, Requested: {currency}"
+            "status": "ERROR_INSUFFICIENT_FUNDS", "current_balance": from_account_details['balance'],
+            "requested_amount": amount, "currency": currency,
+            "from_account_id": from_account_id, "to_account_id": to_account_id, "message": err_msg
         }
-    
-    # Check sufficient balance
-    if from_account["balance"] < amount:
-        return {
-            "status": "INSUFFICIENT_FUNDS",
-            "message": f"Insufficient funds. Available: {from_account['balance']} {currency}",
-            "current_balance": from_account["balance"],
-            "requested_amount": amount,
-            "currency": currency,
-            "from_account_id": from_account_id,
-            "to_account_id": to_account_id
-        }
-    
-    # Generate transaction IDs and timestamp
+
     transaction_base_id = f"txn_{uuid.uuid4().hex}"
     debit_transaction_id = f"{transaction_base_id}_D"
     credit_transaction_id = f"{transaction_base_id}_C"
-    current_timestamp = datetime.now(timezone.utc).isoformat()
-    
-    # Get table references
+    current_timestamp_str = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
     accounts_table = _table_ref("Accounts")
     transactions_table = _table_ref("Transactions")
-    
-    # Prepare the multi-statement transaction
+
+    # Multi-statement transaction
+    # Note: Parameterization within a single multi-statement string sent to client.query()
+    # can be tricky. For complex cases, consider stored procedures or multiple client.query calls
+    # managed by application logic if BEGIN/COMMIT isn't directly parameterizable as one string.
+    # However, for this structure, we'll build the DML string.
+    # Ensure values are properly escaped or use query parameters if supported by the client library for multi-statement.
+    # For direct DML string construction, ensure numeric types are not quoted, strings are.
+    # BigQuery's standard SQL client.query() with @params should handle this.
+
     query_str = f"""
     BEGIN TRANSACTION;
 
-    -- 1. Decrement sender's balance
+    -- Decrement sender's balance
     UPDATE {accounts_table}
     SET balance = balance - @amount
     WHERE account_id = @from_account_id AND user_id = @user_id;
 
-    -- 2. Increment recipient's balance
+    -- Increment recipient's balance
     UPDATE {accounts_table}
     SET balance = balance + @amount
     WHERE account_id = @to_account_id AND user_id = @user_id;
 
-    -- 3. Insert debit transaction for sender
-    INSERT INTO {transactions_table} (
-        transaction_id, account_id, user_id, date, 
-        description, amount, currency, type, memo
-    ) VALUES (
-        @debit_transaction_id, @from_account_id, @user_id, @timestamp,
-        @debit_description, -@amount, @currency, 'transfer_debit', @memo
-    );
+    -- Insert debit transaction for sender
+    INSERT INTO {transactions_table} (transaction_id, account_id, user_id, date, description, amount, currency, type, memo)
+    VALUES (@debit_transaction_id, @from_account_id, @user_id, @timestamp, @debit_description, -@amount, @currency, 'transfer_debit', @memo);
 
-    -- 4. Insert credit transaction for recipient
-    INSERT INTO {transactions_table} (
-        transaction_id, account_id, user_id, date, 
-        description, amount, currency, type, memo
-    ) VALUES (
-        @credit_transaction_id, @to_account_id, @user_id, @timestamp,
-        @credit_description, @amount, @currency, 'transfer_credit', @memo
-    );
+    -- Insert credit transaction for recipient
+    INSERT INTO {transactions_table} (transaction_id, account_id, user_id, date, description, amount, currency, type, memo)
+    VALUES (@credit_transaction_id, @to_account_id, @user_id, @timestamp, @credit_description, @amount, @currency, 'transfer_credit', @memo);
 
     COMMIT TRANSACTION;
     """
-    
+
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
             bigquery.ScalarQueryParameter("amount", "FLOAT64", amount),
@@ -539,691 +424,680 @@ def execute_fund_transfer(from_account_id: str, to_account_id: str, amount: floa
             bigquery.ScalarQueryParameter("user_id", "STRING", USER_ID),
             bigquery.ScalarQueryParameter("debit_transaction_id", "STRING", debit_transaction_id),
             bigquery.ScalarQueryParameter("credit_transaction_id", "STRING", credit_transaction_id),
-            bigquery.ScalarQueryParameter("timestamp", "TIMESTAMP", current_timestamp),
-            bigquery.ScalarQueryParameter("debit_description", "STRING", 
-                f"Transfer to account {to_account.get('account_name', to_account_id)}"),
-            bigquery.ScalarQueryParameter("credit_description", "STRING", 
-                f"Transfer from account {from_account.get('account_name', from_account_id)}"),
+            bigquery.ScalarQueryParameter("timestamp", "TIMESTAMP", current_timestamp_str),
+            bigquery.ScalarQueryParameter("debit_description", "STRING", f"Transfer to account {to_account_id}"),
+            bigquery.ScalarQueryParameter("credit_description", "STRING", f"Transfer from account {from_account_id}"),
             bigquery.ScalarQueryParameter("currency", "STRING", currency),
-            bigquery.ScalarQueryParameter("memo", "STRING", memo or "")
+            bigquery.ScalarQueryParameter("memo", "STRING", memo),
         ]
     )
-    
+
     try:
-        logger.info(f"[{func_name}] Executing fund transfer transaction for user {USER_ID} "
-                  f"from {from_account_id} to {to_account_id} for {amount} {currency}.")
+        logger.info("[%s] Executing fund transfer transaction for user %s from %s to %s for %s %s.", func_name, USER_ID, from_account_id, to_account_id, amount, currency)
         query_job = client.query(query_str, job_config=job_config)
         query_job.result()  # Wait for the transaction to complete
 
         if query_job.errors:
+            # This block might not be reached if errors cause an exception handled by the except block.
+            # However, it's good practice to check job.errors if result() doesn't raise.
             error_detail = f"BigQuery transaction failed: {query_job.errors}"
-            log_bq_interaction(func_name, params, query_str, 
-                             status="ERROR_TRANSACTION_FAILED", 
-                             error_message=error_detail)
-            return {
-                "status": "ERROR_TRANSACTION_FAILED", 
-                "message": "Fund transfer failed during BigQuery execution.", 
-                "details": query_job.errors
-            }
+            log_bq_interaction(func_name, params, query_str, status="ERROR_TRANSACTION_FAILED", error_message=error_detail)
+            return {"status": "ERROR_TRANSACTION_FAILED", "message": "Fund transfer failed during BigQuery execution.", "details": query_job.errors}
 
-        success_msg = (f"Fund transfer of {amount} {currency} "
-                      f"from {from_account_id} to {to_account_id} completed successfully. "
-                      f"Transaction ID: {transaction_base_id}")
-        
-        log_bq_interaction(func_name, params, query_str, 
-                         status="SUCCESS", 
-                         result_summary=success_msg)
-        
+        success_msg = f"Fund transfer of {amount} {currency} from {from_account_id} to {to_account_id} completed successfully. Transaction ID: {transaction_base_id}"
+        log_bq_interaction(func_name, params, query_str, status="SUCCESS", result_summary=success_msg)
         return {
             "status": "SUCCESS",
             "transaction_id": transaction_base_id,
-            "message": success_msg,
-            "from_account_id": from_account_id,
-            "to_account_id": to_account_id,
-            "amount": amount,
-            "currency": currency,
-            "timestamp": current_timestamp
-        }
-        
-    except GoogleAPICallError as e:
-        error_msg = f"Google API error during fund transfer: {str(e)}"
-        logger.error(f"[{func_name}] {error_msg}", exc_info=True)
-        log_bq_interaction(func_name, params, query_str, 
-                         status="ERROR_GOOGLE_API", 
-                         error_message=error_msg)
-        return {
-            "status": "ERROR_GOOGLE_API",
-            "message": "A Google Cloud service error occurred during the transfer.",
-            "details": str(e)
-        }
-    except BadRequest as e:
-        error_msg = f"Invalid request during fund transfer: {str(e)}"
-        logger.error(f"[{func_name}] {error_msg}", exc_info=True)
-        log_bq_interaction(func_name, params, query_str, 
-                         status="ERROR_INVALID_REQUEST", 
-                         error_message=error_msg)
-        return {
-            "status": "ERROR_INVALID_REQUEST",
-            "message": "The fund transfer request was invalid.",
-            "details": str(e)
+            "message": success_msg
         }
     except Exception as e:
-        error_msg = f"Unexpected error during fund transfer: {str(e)}"
-        logger.error(f"[{func_name}] {error_msg}", exc_info=True)
-        log_bq_interaction(func_name, params, query_str, 
-                         status="ERROR_UNKNOWN", 
-                         error_message=error_msg)
+        error_message = f"Exception during fund transfer: {str(e)}"
+        logger.error("[%s] %s", func_name, error_message, exc_info=True)
+        # Attempt to rollback if possible, though BigQuery auto-rolls back on error in a transaction
+        try:
+            client.query("ROLLBACK TRANSACTION;").result() # May error if no transaction active
+            logger.info("[%s] Attempted ROLLBACK TRANSACTION due to error.", func_name)
+        except Exception as rb_e:
+            logger.warning("[%s] Error during explicit ROLLBACK attempt: %s", func_name, rb_e)
+
+        log_bq_interaction(func_name, params, query_str, status="ERROR_EXCEPTION", error_message=error_message)
+        return {"status": "ERROR_EXCEPTION", "message": "An internal error occurred during fund transfer.", "details": str(e)}
+
+
+def get_bill_details(bill_type: str, payee_nickname: str = None) -> dict:
+    """
+    Queries the RegisteredBillers table for bill details for the USER_ID.
+    """
+    func_name = "get_bill_details"
+    params = {"bill_type": bill_type, "payee_nickname": payee_nickname, "user_id": USER_ID}
+    query_str = None
+
+    if not client:
+        log_bq_interaction(func_name, params, status="ERROR_CLIENT_NOT_INITIALIZED", error_message="BigQuery client not available.")
+        return {"status": "ERROR_CLIENT_NOT_INITIALIZED", "message": "BigQuery client not available."}
+
+    billers_table = _table_ref("RegisteredBillers")
+    query_params_list = [
+        bigquery.ScalarQueryParameter("user_id", "STRING", USER_ID),
+    ]
+    
+    where_conditions = ["user_id = @user_id"]
+    
+    if bill_type:
+        where_conditions.append("bill_type = @bill_type")
+        query_params_list.append(bigquery.ScalarQueryParameter("bill_type", "STRING", bill_type))
+
+    if payee_nickname:
+        where_conditions.append("payee_nickname = @payee_nickname")
+        query_params_list.append(bigquery.ScalarQueryParameter("payee_nickname", "STRING", payee_nickname))
+        
+    query_str = f"""
+        SELECT biller_id, biller_name, last_due_amount as due_amount, last_due_date as due_date, default_payment_account_id
+        FROM {billers_table}
+        WHERE {" AND ".join(where_conditions)}
+    """
+    job_config = bigquery.QueryJobConfig(query_parameters=query_params_list)
+    
+    try:
+        query_job = client.query(query_str, job_config=job_config)
+        results = list(query_job.result())
+
+        if not results:
+            err_msg = f"No billers found for the specified criteria."
+            if bill_type: err_msg += f" Type: '{bill_type}'"
+            if payee_nickname: err_msg += f" Nickname: '{payee_nickname}'"
+            log_bq_interaction(func_name, params, query_str, status="ERROR_BILLER_NOT_FOUND", error_message=err_msg)
+            return {"status": "ERROR_BILLER_NOT_FOUND", "message": err_msg}
+
+        billers_data = [{
+            "biller_id": row.biller_id,
+            "biller_name": row.biller_name,
+            "due_amount": float(row.due_amount) if row.due_amount is not None else None,
+            "due_date": row.due_date.isoformat() if row.due_date else None,
+            "default_payment_account_id": row.default_payment_account_id
+        } for row in results]
+
+        result_summary = f"Found {len(billers_data)} biller(s)."
+        log_bq_interaction(func_name, params, query_str, status="SUCCESS", result_summary=result_summary)
+        return {"status": "SUCCESS", "data": billers_data}
+    except Exception as e:
+        logger.error("Exception in %s: %s", func_name, str(e), exc_info=True)
+        log_bq_interaction(func_name, params, query_str, status="ERROR_QUERY_FAILED", error_message=str(e))
+        return {"status": "ERROR_QUERY_FAILED", "message": str(e)}
+
+
+def _get_payee_name(payee_id: str, user_id: str) -> str | None:
+    """Helper to fetch payee name from RegisteredBillers for a specific user."""
+    func_name = "_get_payee_name"
+    params = {"payee_id": payee_id, "user_id": user_id}
+    query_str = None
+
+    if not client:
+        log_bq_interaction(func_name, params, status="ERROR_CLIENT_NOT_INITIALIZED", error_message="BigQuery client not available.")
+        return None
+
+    billers_table = _table_ref("RegisteredBillers")
+    query_str = f"""
+        SELECT biller_name FROM {billers_table}
+        WHERE biller_id = @payee_id AND user_id = @user_id
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("payee_id", "STRING", payee_id),
+            bigquery.ScalarQueryParameter("user_id", "STRING", user_id),
+        ]
+    )
+    try:
+        query_job = client.query(query_str, job_config=job_config)
+        row = next(query_job.result(), None)
+        if row:
+            log_bq_interaction(func_name, params, query_str, status="SUCCESS", result_summary=f"Payee name found: {row.biller_name}")
+            return row.biller_name
+        else:
+            log_bq_interaction(func_name, params, query_str, status="ERROR_PAYEE_NOT_FOUND", error_message="Payee ID not found.")
+            return None
+    except Exception as e:
+        logger.error("Exception in %s: %s", func_name, str(e), exc_info=True)
+        log_bq_interaction(func_name, params, query_str, status="ERROR_QUERY_FAILED", error_message=str(e))
+        return None
+
+
+def get_account_balance_by_id(account_id: str, user_id: str) -> dict:
+    """Helper to get balance and currency for a specific account_id and user_id."""
+    func_name = "get_account_balance_by_id"
+    params = {"account_id": account_id, "user_id": user_id}
+    query_str = None
+    
+    if not client:
+        log_bq_interaction(func_name, params, status="ERROR_CLIENT_NOT_INITIALIZED", error_message="BigQuery client not available.")
+        return {"status": "ERROR_CLIENT_NOT_INITIALIZED", "message": "BigQuery client not available."}
+
+    accounts_table = _table_ref("Accounts")
+    query_str = f"""
+        SELECT balance, currency FROM {accounts_table}
+        WHERE account_id = @account_id AND user_id = @user_id
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("account_id", "STRING", account_id),
+            bigquery.ScalarQueryParameter("user_id", "STRING", user_id),
+        ]
+    )
+    try:
+        query_job = client.query(query_str, job_config=job_config)
+        row = next(query_job.result(), None)
+        if row:
+            result = {"status": "SUCCESS", "balance": float(row.balance), "currency": row.currency}
+            log_bq_interaction(func_name, params, query_str, status="SUCCESS", result_summary=f"Balance found for {account_id}.")
+            return result
+        else:
+            err_msg = f"Account ID '{account_id}' not found for user '{user_id}'."
+            log_bq_interaction(func_name, params, query_str, status="ERROR_ACCOUNT_NOT_FOUND", error_message=err_msg)
+            return {"status": "ERROR_ACCOUNT_NOT_FOUND", "message": err_msg}
+    except Exception as e:
+        logger.error("Exception in %s: %s", func_name, str(e), exc_info=True)
+        log_bq_interaction(func_name, params, query_str, status="ERROR_QUERY_FAILED", error_message=str(e))
+        return {"status": "ERROR_QUERY_FAILED", "message": str(e)}
+
+
+def pay_bill(amount: float, payee_id: str = None, bill_type: str = None, from_account_id: str = None, user_id: str = None) -> dict:
+    """
+    Pays a bill, identified by either payee_id or bill_type.
+    """
+    func_name = "pay_bill"
+    user_id = user_id or USER_ID
+    params = {"payee_id": payee_id, "bill_type": bill_type, "amount": amount, "from_account_id": from_account_id, "user_id": user_id}
+
+    if not client:
+        log_bq_interaction(func_name, params, status="ERROR_CLIENT_NOT_INITIALIZED", error_message="BigQuery client not available.")
+        return {"status": "ERROR_CLIENT_NOT_INITIALIZED", "message": "BigQuery client not available."}
+
+    if not isinstance(amount, (int, float)) or amount <= 0:
+        log_bq_interaction(func_name, params, status="ERROR_INVALID_AMOUNT", error_message="Payment amount must be a positive number.")
+        return {"status": "ERROR_INVALID_AMOUNT", "message": "Payment amount must be a positive number."}
+
+    # Resolve biller by type if payee_id is not provided
+    if not payee_id and bill_type:
+        logger.info("[%s] Attempting to find biller by type: '%s'", func_name, bill_type)
+        biller_details = get_bill_details(bill_type=bill_type) # Assuming this finds one biller
+        if biller_details.get("status") == "SUCCESS" and biller_details.get("data"):
+            payee_id = biller_details["data"][0].get("biller_id")
+            logger.info("[%s] Resolved bill_type '%s' to biller_id '%s'.", func_name, bill_type, payee_id)
+            params["payee_id"] = payee_id # Update params for logging
+        else:
+            err_msg = f"Could not find a registered biller for bill type '{bill_type}'."
+            log_bq_interaction(func_name, params, status="ERROR_BILLER_NOT_FOUND", error_message=err_msg)
+            return {"status": "ERROR_BILLER_NOT_FOUND", "message": err_msg}
+    elif not payee_id and not bill_type:
+        err_msg = "A biller must be specified by providing either a payee_id or a bill_type."
+        log_bq_interaction(func_name, params, status="ERROR_MISSING_BILLER_ID", error_message=err_msg)
+        return {"status": "ERROR_MISSING_BILLER_ID", "message": err_msg}
+
+    # Resolve the natural language account name to an account ID first.
+    account_details = find_account_by_natural_language(user_id, from_account_id)
+    if account_details.get("status") != "SUCCESS":
+        err_msg = f"Error with payment account '{from_account_id}': {account_details.get('message')}"
+        log_bq_interaction(func_name, params, status=account_details.get("status", "ERROR_ACCOUNT_RESOLUTION_FAILED"), error_message=err_msg)
+        return {"status": account_details.get("status", "ERROR_ACCOUNT_RESOLUTION_FAILED"), "message": err_msg}
+    
+    payment_account_id = account_details.get("account_id")
+    logger.info("[%s] Resolved payment account name '%s' to ID '%s'.", func_name, from_account_id, payment_account_id)
+
+    balance_details = get_account_balance_by_id(payment_account_id, user_id)
+    if balance_details.get("status") != "SUCCESS":
+        err_msg = f"Error with payment account '{from_account_id}': {balance_details.get('message')}"
+        log_bq_interaction(func_name, params, status=balance_details.get("status", "ERROR_ACCOUNT_NOT_FOUND"), error_message=err_msg)
+        return {"status": balance_details.get("status", "ERROR_ACCOUNT_NOT_FOUND"), "message": err_msg}
+
+    current_balance = balance_details["balance"]
+    currency = balance_details["currency"]
+
+    if current_balance < amount:
+        err_msg = f"Insufficient funds in account {from_account_id} ({payment_account_id}). Has: {current_balance} {currency}, Needs: {amount} {currency}"
+        log_bq_interaction(func_name, params, status="INSUFFICIENT_FUNDS", error_message=err_msg)
         return {
-            "status": "ERROR_UNKNOWN",
-            "message": "An unexpected error occurred during the fund transfer.",
-            "details": str(e)
+            "status": "INSUFFICIENT_FUNDS", "current_balance": current_balance,
+            "requested_amount": amount, "currency": currency,
+            "from_account_id": from_account_id, "payee_id": payee_id, "message": err_msg
         }
 
-# --- Transaction Functions ---
-def get_transactions_for_account(user_id: str, account_id: str, limit: int = 10) -> list:
-    """
-    Retrieves transactions for a specific account of a user.
-
-    Args:
-        user_id (str): The ID of the user.
-        account_id (str): The ID of the account.
-        limit (int): Maximum number of transactions to retrieve.
-
-    Returns:
-        list: A list of dictionaries, where each dictionary represents a transaction
-              with keys: "transaction_id", "date", "description", "amount", "type", "category".
-    """
-    table = _table_ref('Transactions')
-    if not table: return []
-    query = f"""
-        SELECT transaction_id, date, description, amount, type
-        FROM `{table}`
-        WHERE user_id = @user_id AND account_id = @account_id
-        ORDER BY date DESC
-        LIMIT @limit
-    """
-    params = [
-        bigquery.ScalarQueryParameter("user_id", "STRING", user_id),
-        bigquery.ScalarQueryParameter("account_id", "STRING", account_id),
-        bigquery.ScalarQueryParameter("limit", "INT64", limit)
-    ]
-    results = _execute_query(query, params)
-    transactions = []
-    if results:
-        for row in results:
-            transactions.append({
-                "transaction_id": row.transaction_id,
-                "date": row.date.strftime("%Y-%m-%d %H:%M:%S") if row.date else None,
-                "description": row.description,
-                "amount": row.amount,
-                "type": row.type
-            })
-    return transactions
-
-# --- Biller Functions ---
-def list_registered_billers(user_id: str) -> list:
-    """
-    Lists all registered billers for a user.
-
-    Args:
-        user_id (str): The ID of the user.
-
-    Returns:
-        list: A list of dictionaries, where each dictionary represents a registered biller
-              with keys: "biller_id", "biller_nickname", "biller_name", "account_number_at_biller",
-              "last_due_amount", "last_due_date", "bill_type".
-    """
-    table = _table_ref('RegisteredBillers')
-    if not table: return []
-    query = f"""
-        SELECT
-            biller_id,
-            biller_name,
-            biller_nickname,
-            account_number_at_biller,
-            last_due_amount,
-            last_due_date,
-            bill_type
-        FROM `{table}`
-        WHERE user_id = @user_id
-        ORDER BY biller_nickname
-    """
-    params = [bigquery.ScalarQueryParameter("user_id", "STRING", user_id)]
-    results = _execute_query(query, params)
-    billers = []
-    if results:
-        for row in results:
-            # Sanitize biller_id in the output
-            sanitized_biller_id = sanitize_biller_id(row.biller_id)
-            
-            # Use the official biller_name from the database
-            biller_name = row.biller_name
-            if not biller_name:
-                # Fallback to nickname or bill type if official name is not available
-                biller_name = row.biller_nickname or f"{row.bill_type.title()} Bill"
-                
-            billers.append({
-                "biller_id": sanitized_biller_id,
-                "biller_nickname": row.biller_nickname,
-                "biller_name": biller_name,
-                "account_number_at_biller": row.account_number_at_biller,
-                "last_due_amount": row.last_due_amount,
-                "last_due_date": str(row.last_due_date) if row.last_due_date else None,
-                "bill_type": row.bill_type
-            })
-    return billers
-
-def find_biller_by_nickname(user_id: str, biller_nickname: str) -> dict | None:
-    """
-    Finds a biller based on user ID and biller nickname (case-insensitive).
-
-    Args:
-        user_id (str): The ID of the user.
-        biller_nickname (str): The nickname of the biller to find.
-
-    Returns:
-        dict: A dictionary containing the biller's details (including biller_id)
-              if a match is found, otherwise None.
-    """
-    table = _table_ref('RegisteredBillers')
-    if not table: return None
-    query = f"""
-        SELECT
-            biller_id,
-            biller_nickname,
-            account_number_at_biller,
-            last_due_amount,
-            last_due_date,
-            bill_type
-        FROM `{table}`
-        WHERE user_id = @user_id AND LOWER(biller_nickname) = LOWER(@biller_nickname)
-    """
-    params = [
-        bigquery.ScalarQueryParameter("user_id", "STRING", user_id),
-        bigquery.ScalarQueryParameter("biller_nickname", "STRING", biller_nickname)
-    ]
-    results = _execute_query(query, params)
-    if results:
-        for row in results: # Should be only one or none
-            return {
-                "biller_id": row.biller_id,
-                "biller_nickname": row.biller_nickname,
-                "account_number_at_biller": row.account_number_at_biller,
-                "last_due_amount": row.last_due_amount,
-                "last_due_date": str(row.last_due_date) if row.last_due_date else None,
-                "bill_type": row.bill_type
-            }
-    return None
-
-def get_bill_details(user_id: str, biller_id: str) -> dict | None:
-    """
-    Retrieves details for a specific biller.
-
-    Args:
-        user_id (str): The ID of the user.
-        biller_id (str): The ID of the biller.
-
-    Returns:
-        dict: A dictionary containing bill details with keys: "biller_nickname",
-              "account_number_at_biller", "last_due_amount", "last_due_date", "bill_type",
-              or None if not found.
-    """
-    table = _table_ref('RegisteredBillers')
-    if not table: return None
-    query = f"""
-        SELECT
-            biller_nickname,
-            account_number_at_biller,
-            last_due_amount,
-            last_due_date,
-            bill_type
-        FROM `{table}`
-        WHERE user_id = @user_id AND biller_id = @biller_id
-    """
-    params = [
-        bigquery.ScalarQueryParameter("user_id", "STRING", user_id),
-        bigquery.ScalarQueryParameter("biller_id", "STRING", biller_id)
-    ]
-    results = _execute_query(query, params)
-    if results:
-        for row in results: # Should be only one or none
-            return {
-                "biller_nickname": row.biller_nickname,
-                "account_number_at_biller": row.account_number_at_biller,
-                "last_due_amount": row.last_due_amount,
-                "last_due_date": str(row.last_due_date) if row.last_due_date else None,
-                "bill_type": row.bill_type
-            }
-    return None
-
-def register_biller(user_id: str, biller_id: str, biller_nickname: str,
-                    account_number_at_biller: str, last_due_amount: float | None,
-                    last_due_date: str | date | None, bill_type: str) -> bool:
-    """
-    Registers a new biller for the user.
-
-    Args:
-        user_id (str): User's ID.
-        biller_id (str): Unique ID for the biller registration.
-        biller_nickname (str): User-defined nickname for the biller.
-        account_number_at_biller (str): User's account number with the biller.
-        last_due_amount (float | None): Current due amount. Can be None.
-        last_due_date (str | date | None): Due date (e.g., 'YYYY-MM-DD' string or date object). Can be None.
-        bill_type (str): Type of bill (e.g., 'ELECTRICITY', 'WATER').
-
-    Returns:
-        bool: True if registration was successful, False otherwise.
-    """
-    table = _table_ref('RegisteredBillers')
-    if not table: return False
+    payee_name = _get_payee_name(payee_id, user_id)
+    if not payee_name:
+        err_msg = f"Biller with ID '{payee_id}' not found for user '{user_id}'."
+        log_bq_interaction(func_name, params, status="ERROR_BILLER_NOT_FOUND", error_message=err_msg)
+        return {"status": "ERROR_BILLER_NOT_FOUND", "message": err_msg}
     
-    # Sanitize the biller_id before insertion
-    sanitized_biller_id = sanitize_biller_id(biller_id)
-    
-    query = f"""
-        INSERT INTO `{table}` (
-            user_id, biller_id, biller_nickname, account_number_at_biller,
-            last_due_amount, last_due_date, bill_type
-        )
-        VALUES (
-            @user_id, @biller_id, @biller_nickname, @account_number_at_biller,
-            @last_due_amount, @last_due_date, @bill_type
-        )
+    transaction_id = f"txn_{uuid.uuid4().hex}"
+    current_timestamp_str = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    accounts_table = _table_ref("Accounts")
+    transactions_table = _table_ref("Transactions")
+    billers_table = _table_ref("RegisteredBillers")
+
+    query_str = f"""
+    BEGIN TRANSACTION;
+
+    UPDATE {accounts_table}
+    SET balance = balance - @amount
+    WHERE account_id = @payment_account_id AND user_id = @user_id;
+
+    INSERT INTO {transactions_table} (transaction_id, account_id, user_id, date, description, amount, currency, type, memo)
+    VALUES (@transaction_id, @payment_account_id, @user_id, @timestamp, @description, -@amount, @currency, 'bill_payment', @memo);
+
+    UPDATE {billers_table}
+    SET last_due_amount = last_due_amount - @amount
+    WHERE biller_id = @payee_id AND user_id = @user_id;
+
+    COMMIT TRANSACTION;
     """
-    parsed_due_date = None
-    if isinstance(last_due_date, str):
+
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("amount", "FLOAT64", amount),
+            bigquery.ScalarQueryParameter("payment_account_id", "STRING", payment_account_id),
+            bigquery.ScalarQueryParameter("user_id", "STRING", user_id),
+            bigquery.ScalarQueryParameter("transaction_id", "STRING", transaction_id),
+            bigquery.ScalarQueryParameter("timestamp", "TIMESTAMP", current_timestamp_str),
+            bigquery.ScalarQueryParameter("description", "STRING", f"Bill payment to {payee_name}"),
+            bigquery.ScalarQueryParameter("currency", "STRING", currency),
+            bigquery.ScalarQueryParameter("memo", "STRING", f"Payment for biller ID {payee_id}"),
+            bigquery.ScalarQueryParameter("payee_id", "STRING", payee_id),
+        ]
+    )
+
+    try:
+        logger.info("[%s] Executing bill payment transaction for user %s, payee %s, amount %s %s from account %s.", func_name, user_id, payee_id, amount, currency, payment_account_id)
+        query_job = client.query(query_str, job_config=job_config)
+        query_job.result()  # Wait for the transaction to complete
+
+        if query_job.errors:
+            error_detail = f"BigQuery transaction for bill payment failed: {query_job.errors}"
+            log_bq_interaction(func_name, params, query_str, status="ERROR_TRANSACTION_FAILED", error_message=error_detail)
+            return {"status": "ERROR_TRANSACTION_FAILED", "message": "Bill payment failed during BigQuery execution.", "details": query_job.errors}
+
+        success_msg = f"Bill payment of {amount} {currency} to {payee_name} from account {from_account_id} was successful. Transaction ID: {transaction_id}."
+        log_bq_interaction(func_name, params, query_str, status="SUCCESS", result_summary=success_msg)
+        return {
+            "status": "SUCCESS",
+            "transaction_id": transaction_id,
+            "biller_id": payee_id,
+            "biller_name": payee_name,
+            "amount_paid": float(amount),
+            "currency": currency,
+            "from_account_id": from_account_id,
+            "message": success_msg
+        }
+    except Exception as e:
+        error_message = f"Exception during bill payment transaction: {str(e)}"
+        logger.error("[%s] %s", func_name, error_message, exc_info=True)
+        log_bq_interaction(func_name, params, query_str, status="ERROR_EXCEPTION", error_message=error_message)
+        return {"status": "ERROR_EXCEPTION", "message": "An internal error occurred during bill payment.", "details": str(e)}
+
+
+def register_biller(user_id: str, biller_name: str, biller_type: str, account_number: str, payee_nickname: str = None, default_payment_account_id: str = None, due_amount: float = None, due_date: str = None) -> dict:
+    """
+    Registers a new biller for a given user in the RegisteredBillers table.
+    Checks for duplicates based on user_id, biller_type, and account_number.
+    """
+    func_name = "register_biller"
+    params = {
+        "user_id": user_id, "biller_name": biller_name, "biller_type": biller_type,
+        "account_number": account_number, "payee_nickname": payee_nickname,
+        "default_payment_account_id": default_payment_account_id,
+        "due_amount": due_amount, "due_date": due_date
+    }
+    query_str_check = None
+    query_str_insert = None
+
+    if not client:
+        log_bq_interaction(func_name, params, status="ERROR_CLIENT_NOT_INITIALIZED", error_message="BigQuery client not available.")
+        return {"status": "ERROR_CLIENT_NOT_INITIALIZED", "message": "BigQuery client not available."}
+
+    # Validate for duplicate biller
+    billers_table = _table_ref("RegisteredBillers")
+    query_str_check = f"""
+        SELECT biller_id FROM {billers_table}
+        WHERE user_id = @user_id AND biller_type = @biller_type AND account_number = @account_number
+    """
+    job_config_check = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("user_id", "STRING", user_id),
+            bigquery.ScalarQueryParameter("biller_type", "STRING", biller_type),
+            bigquery.ScalarQueryParameter("account_number", "STRING", account_number),
+        ]
+    )
+    try:
+        existing_biller = list(client.query(query_str_check, job_config=job_config_check).result())
+        if existing_biller:
+            err_msg = f"A biller with the same type and account number is already registered."
+            log_bq_interaction(func_name, params, query_str_check, status="ERROR_DUPLICATE_BILLER", error_message=err_msg)
+            return {"status": "ERROR_DUPLICATE_BILLER", "message": err_msg}
+    except Exception as e:
+        logger.error("Exception during duplicate biller check: %s", str(e), exc_info=True)
+        log_bq_interaction(func_name, params, query_str_check, status="ERROR_QUERY_FAILED", error_message=str(e))
+        return {"status": "ERROR_QUERY_FAILED", "message": "Failed to check for duplicate billers."}
+
+    # Generate a unique biller_id
+    biller_id = f"biller_{uuid.uuid4().hex}"
+    
+    # Format due_date if provided
+    if due_date:
         try:
-            parsed_due_date = datetime.strptime(last_due_date, "%Y-%m-%d").date()
+            # Assuming due_date is in 'YYYY-MM-DD' format
+            due_date_obj = datetime.datetime.strptime(due_date, '%Y-%m-%d').date()
         except ValueError:
-            print(f"Invalid date format for last_due_date: {last_due_date}. Expected YYYY-MM-DD. Storing as NULL.")
-    elif isinstance(last_due_date, date):
-        parsed_due_date = last_due_date
+            return {"status": "ERROR_INVALID_DATE_FORMAT", "message": "Invalid due_date format. Please use YYYY-MM-DD."}
+    else:
+        due_date_obj = None
 
-    params = [
-        bigquery.ScalarQueryParameter("user_id", "STRING", user_id),
-        bigquery.ScalarQueryParameter("biller_id", "STRING", sanitized_biller_id),
-        bigquery.ScalarQueryParameter("biller_nickname", "STRING", biller_nickname),
-        bigquery.ScalarQueryParameter("account_number_at_biller", "STRING", account_number_at_biller),
-        bigquery.ScalarQueryParameter("last_due_amount", "FLOAT64", last_due_amount),
-        bigquery.ScalarQueryParameter("last_due_date", "DATE", parsed_due_date),
-        bigquery.ScalarQueryParameter("bill_type", "STRING", bill_type)
-    ]
-    return _execute_dml(query, params)
-
-def update_biller_details(user_id: str, biller_id: str,
-                          new_biller_nickname: str | None = None,
-                          new_account_number_at_biller: str | None = None) -> bool:
+    query_str_insert = f"""
+        INSERT INTO {billers_table} (biller_id, user_id, biller_name, bill_type, account_number, payee_nickname, default_payment_account_id, last_due_amount, last_due_date)
+        VALUES (@biller_id, @user_id, @biller_name, @biller_type, @account_number, @payee_nickname, @default_payment_account_id, @due_amount, @due_date)
     """
-    Updates details for an existing registered biller.
-    Only updates biller_nickname and account_number_at_biller.
+    job_config_insert = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("biller_id", "STRING", biller_id),
+            bigquery.ScalarQueryParameter("user_id", "STRING", user_id),
+            bigquery.ScalarQueryParameter("biller_name", "STRING", biller_name),
+            bigquery.ScalarQueryParameter("biller_type", "STRING", biller_type),
+            bigquery.ScalarQueryParameter("account_number", "STRING", account_number),
+            bigquery.ScalarQueryParameter("payee_nickname", "STRING", payee_nickname),
+            bigquery.ScalarQueryParameter("default_payment_account_id", "STRING", default_payment_account_id),
+            bigquery.ScalarQueryParameter("due_amount", "FLOAT64", due_amount),
+            bigquery.ScalarQueryParameter("due_date", "DATE", due_date_obj),
+        ]
+    )
 
-    Args:
-        user_id (str): User's ID.
-        biller_id (str): Biller's ID.
-        new_biller_nickname (str, optional): New nickname for the biller.
-        new_account_number_at_biller (str, optional): New account number with the biller.
+    try:
+        client.query(query_str_insert, job_config=job_config_insert).result() # Wait for completion
+        success_msg = f"Biller '{biller_name}' registered successfully with ID '{biller_id}'."
+        log_bq_interaction(func_name, params, query_str_insert, status="SUCCESS", result_summary=success_msg)
+        return {"status": "SUCCESS", "biller_id": biller_id, "message": success_msg}
+    except Exception as e:
+        logger.error("Exception during biller registration: %s", str(e), exc_info=True)
+        log_bq_interaction(func_name, params, query_str_insert, status="ERROR_INSERT_FAILED", error_message=str(e))
+        return {"status": "ERROR_INSERT_FAILED", "message": "Failed to register new biller."}
 
-    Returns:
-        bool: True if update was successful, False otherwise.
+
+def update_biller_details(user_id: str, payee_id: str, updates: dict) -> dict:
     """
-    table = _table_ref('RegisteredBillers')
-    if not table: return False
+    Updates details for a registered biller.
+    """
+    func_name = "update_biller_details"
+    params = {"user_id": user_id, "payee_id": payee_id, "updates": updates}
+    
+    if not client:
+        log_bq_interaction(func_name, params, status="ERROR_CLIENT_NOT_INITIALIZED", error_message="BigQuery client not available.")
+        return {"status": "ERROR_CLIENT_NOT_INITIALIZED", "message": "BigQuery client not available."}
+
+    if not updates:
+        return {"status": "NO_UPDATES_PROVIDED", "message": "No updates were provided."}
+
+    billers_table = _table_ref("RegisteredBillers")
     set_clauses = []
-    params_for_set = []
+    query_params = [
+        bigquery.ScalarQueryParameter("biller_id", "STRING", payee_id),
+        bigquery.ScalarQueryParameter("user_id", "STRING", user_id)
+    ]
 
-    if new_biller_nickname is not None:
-        set_clauses.append("biller_nickname = @new_biller_nickname")
-        params_for_set.append(bigquery.ScalarQueryParameter("new_biller_nickname", "STRING", new_biller_nickname))
-    if new_account_number_at_biller is not None:
-        set_clauses.append("account_number_at_biller = @new_account_number_at_biller")
-        params_for_set.append(bigquery.ScalarQueryParameter("new_account_number_at_biller", "STRING", new_account_number_at_biller))
+    for key, value in updates.items():
+        # Basic validation and type handling
+        if key in ["biller_name", "payee_nickname", "default_payment_account_id", "account_number", "bill_type"]:
+            param_type = "STRING"
+        elif key == "last_due_amount":
+            param_type = "FLOAT64"
+            value = float(value)
+        elif key == "last_due_date":
+            param_type = "DATE"
+            try:
+                value = datetime.datetime.strptime(value, '%Y-%m-%d').date()
+            except (ValueError, TypeError):
+                return {"status": "ERROR_INVALID_DATE_FORMAT", "message": "Invalid date format for last_due_date. Use YYYY-MM-DD."}
+        else:
+            continue # Ignore unsupported fields
+
+        set_clauses.append(f"{key} = @{key}")
+        query_params.append(bigquery.ScalarQueryParameter(key, param_type, value))
 
     if not set_clauses:
-        print("No details provided for update.")
-        return False # Or True, if no change means success
+        return {"status": "NO_VALID_UPDATES", "message": "No valid fields to update were provided."}
 
-    query = f"""
-        UPDATE `{table}`
+    query_str = f"""
+        UPDATE {billers_table}
         SET {', '.join(set_clauses)}
-        WHERE user_id = @user_id AND biller_id = @biller_id
+        WHERE biller_id = @biller_id AND user_id = @user_id
     """
-    base_params = [
-        bigquery.ScalarQueryParameter("user_id", "STRING", user_id),
-        bigquery.ScalarQueryParameter("biller_id", "STRING", biller_id)
-    ]
-    return _execute_dml(query, base_params + params_for_set)
-
-
-def remove_biller(user_id: str, biller_id: str) -> bool:
-    """
-    Removes a registered biller for the user by deleting the record.
-
-    Args:
-        user_id (str): User's ID.
-        biller_id (str): Biller's ID to remove.
-
-    Returns:
-        bool: True if removal (deletion) was successful, False otherwise.
-    """
-    table = _table_ref('RegisteredBillers')
-    if not table: return False
-    query = f"""
-        DELETE FROM `{table}`
-        WHERE user_id = @user_id AND biller_id = @biller_id
-    """
-    params = [
-        bigquery.ScalarQueryParameter("user_id", "STRING", user_id),
-        bigquery.ScalarQueryParameter("biller_id", "STRING", biller_id)
-    ]
-    return _execute_dml(query, params)
-
-def sanitize_biller_id(biller_id: str) -> str:
-    """
-    Sanitizes the biller ID to remove problematic characters.
     
-    Args:
-        biller_id (str): The biller ID to sanitize.
-        
-    Returns:
-        str: The sanitized biller ID.
-    """
-    # Remove slashes and other potentially problematic characters
-    sanitized = biller_id.replace("/", "_").replace("\\", "_")
-    # Replace any other problematic characters as needed
-    return sanitized
+    job_config = bigquery.QueryJobConfig(query_parameters=query_params)
 
-def pay_bill(user_id: str, biller_nickname: str, payment_amount: float, timestamp: datetime = None, from_account_id: str = None) -> dict:
-    """
-    Processes a bill payment by:
-    1. Verifying the biller exists
-    2. Checking account balance
-    3. Deducting the payment amount from the specified account (or default account)
-    4. Recording the transaction
-    5. Updating the biller's last payment information
-
-    Args:
-        user_id (str): User's ID.
-        biller_nickname (str): Biller's nickname (case-insensitive).
-        payment_amount (float): The amount being paid.
-        timestamp (datetime, optional): The timestamp of the payment. Defaults to current UTC time.
-        from_account_id (str, optional): Specific account ID to use for payment. If not provided,
-                                      will use biller's default account or find a suitable one.
-
-    Returns:
-        dict: A dictionary with payment status and details.
-              On success: {'status': 'success', 'biller_name': str, 'amount_paid': float, 
-                          'due_date': str, 'account_id': str, 'transaction_id': str}
-              On failure: {'status': 'error', 'message': str}
-    """
-    table = _table_ref('RegisteredBillers')
-    if not table: 
-        return {"status": "error", "message": "Database connection error"}
-
-    # Clean and normalize the nickname
-    biller_nickname = biller_nickname.strip() if biller_nickname else ""
-    if not biller_nickname:
-        return {"status": "error", "message": "Biller nickname cannot be empty"}
-    if payment_amount <= 0:
-        return {"status": "error", "message": "Payment amount must be greater than zero"}
-
-    # Find the biller by nickname (case-insensitive)
-    biller_details = find_biller_by_nickname(user_id, biller_nickname)
-    if not biller_details:
-        return {"status": "error", "message": f"No biller found with nickname: {biller_nickname}"}
-    
-    # Get the biller's official name for the response
-    biller_name = biller_details.get("biller_name") or biller_details.get("biller_nickname") or "Unknown Biller"
-    
-    # Set payment date (default to now if not provided)
-    payment_date = timestamp.date() if timestamp else datetime.utcnow().date()
-    payment_timestamp = timestamp or datetime.utcnow()
-
-    # Begin transaction
     try:
-        # 1. Get the payment account
-        account_id = from_account_id or biller_details.get("default_payment_account_id")
-        if not account_id:
-            # If no specific account provided and no default account, find a suitable account
-            accounts = get_accounts_for_user(user_id)
-            if not accounts:
-                return {"status": "error", "message": "No payment accounts found"}
-                
-            # Try to find a current account with sufficient balance first
-            current_accounts = [acc for acc in accounts 
-                              if acc.get("account_type", "").lower() == "current" 
-                              and acc.get("balance", 0) >= payment_amount]
-            
-            if current_accounts:
-                account_id = current_accounts[0]["account_id"]
-            else:
-                # Find any account with sufficient balance
-                for acc in accounts:
-                    if acc.get("balance", 0) >= payment_amount:
-                        account_id = acc["account_id"]
-                        break
-                
-                if not account_id:
-                    return {"status": "error", "message": "No account with sufficient balance found"}
-        
-        # 2. Verify account exists and has sufficient balance
-        account_table = _table_ref('Accounts')
-        if not account_table:
-            return {"status": "error", "message": "Database error: Could not access accounts"}
-            
-        # 3. Deduct amount from account balance using atomic update
-        update_account_query = f"""
-            UPDATE `{account_table}`
-            SET balance = balance - @payment_amount
-            WHERE user_id = @user_id 
-              AND account_id = @account_id
-              AND balance >= @payment_amount
-        """
-        account_params = [
-            bigquery.ScalarQueryParameter("payment_amount", "FLOAT64", payment_amount),
-            bigquery.ScalarQueryParameter("user_id", "STRING", user_id),
-            bigquery.ScalarQueryParameter("account_id", "STRING", account_id)
-        ]
-        
-        # Execute the account update
-        rows_updated = _execute_dml(update_account_query, account_params)
-        if not rows_updated:
-            return {"status": "error", "message": "Insufficient balance or account not found"}
-        
-        # 4. Record the transaction
-        transaction_id = f"txn_{user_id}_{int(payment_timestamp.timestamp())}"
-        transaction_table = _table_ref('Transactions')
-        if not transaction_table:
-            return {"status": "error", "message": "Database error: Could not access transactions"}
-            
-        insert_transaction_query = f"""
-            INSERT INTO `{transaction_table}`
-            (transaction_id, user_id, account_id, date, description, amount, currency, type, memo)
-            VALUES (@transaction_id, @user_id, @account_id, @date, @description, @amount, @currency, @type, @memo)
-        """
-        transaction_params = [
-            bigquery.ScalarQueryParameter("transaction_id", "STRING", transaction_id),
-            bigquery.ScalarQueryParameter("user_id", "STRING", user_id),
-            bigquery.ScalarQueryParameter("account_id", "STRING", account_id),
-            bigquery.ScalarQueryParameter("date", "TIMESTAMP", payment_timestamp),
-            bigquery.ScalarQueryParameter("description", "STRING", f"Bill payment to {biller_name}"),
-            bigquery.ScalarQueryParameter("amount", "FLOAT64", -payment_amount),  # Negative for debit
-            bigquery.ScalarQueryParameter("currency", "STRING", "INR"),  # Assuming INR, can be parameterized if needed
-            bigquery.ScalarQueryParameter("type", "STRING", "debit"),
-            bigquery.ScalarQueryParameter("memo", "STRING", f"Bill payment for {biller_name}")
-        ]
-        
-        if not _execute_dml(insert_transaction_query, transaction_params):
-            return {"status": "error", "message": "Failed to record transaction"}
-        
-        # 5. Update the biller's record
-        update_biller_query = f"""
-            UPDATE `{table}`
-            SET last_due_amount = 0.0, 
-                last_due_date = @payment_date
-            WHERE user_id = @user_id 
-              AND biller_id = @biller_id
-        """
-        biller_params = [
-            bigquery.ScalarQueryParameter("payment_date", "DATE", payment_date),
-            bigquery.ScalarQueryParameter("user_id", "STRING", user_id),
-            bigquery.ScalarQueryParameter("biller_id", "STRING", biller_details["biller_id"])
-        ]
-        
-        if not _execute_dml(update_biller_query, biller_params):
-            return {"status": "error", "message": "Failed to update biller record"}
-        
-        # If we get here, all operations were successful
-        return {
-            "status": "success",
-            "biller_name": biller_name,
-            "account_id": account_id,
-            "amount_paid": payment_amount,
-            "due_date": payment_date.isoformat(),
-            "transaction_id": transaction_id,
-            "message": f"Successfully paid {payment_amount:.2f} to {biller_name} from account {account_id}"
-        }
-        
-    except Exception as e:
-        print(f"Error in pay_bill: {str(e)}")
-        return {
-            "status": "error",
-            "message": f"An error occurred while processing the payment: {str(e)}"
-        }
+        query_job = client.query(query_str, job_config=job_config)
+        query_job.result() # Wait for completion
 
-# --- Example Usage (for testing, can be removed or commented out) ---
-if __name__ == '__main__':
-    if not client:
-        print("BigQuery client not available. Exiting example usage.")
-        exit()
-
-    print(f"Using DATASET_ID: {DATASET_ID}")
-    current_user_id = USER_ID # Using the hardcoded USER_ID for tests
-    print(f"Using USER_ID for tests: {current_user_id}\n")
-
-    print("--- Accounts ---")
-    accounts = get_accounts_for_user(current_user_id)
-    if accounts:
-        for acc_idx, acc in enumerate(accounts):
-            print(f"  Account ID: {acc['account_id']}, Type: {acc['account_type']}, "
-                  f"Nickname: {acc.get('account_nickname', 'N/A')}, Balance: {acc['balance']}")
-            # Test transactions for the first account found
-            if acc_idx == 0:
-                print(f"    Transactions for Account ID {acc['account_id']}:")
-                transactions = get_transactions_for_account(current_user_id, acc['account_id'], limit=3)
-                if transactions:
-                    for t in transactions:
-                        print(f"      {t['date']} - {t['description']}: {t['amount']} ({t['type']})")
-                else:
-                    print(f"      No transactions found for account {acc['account_id']} or error.")
-    else:
-        print(f"  No accounts found for user {current_user_id} or error.")
-
-    print("\n--- Find Account (Natural Language) ---")
-    # Test with a type that might exist (e.g., 'Savings' if in sample data)
-    found_acc_type = find_account_by_natural_language(current_user_id, "Savings")
-    if found_acc_type:
-        print(f"  Found account (by type 'Savings'): ID {found_acc_type['account_id']} - Nickname: {found_acc_type.get('account_nickname', 'N/A')}, Type: {found_acc_type['account_type']}")
-    else:
-        print("  Account matching type 'Savings' not found.")
-
-    # Test with a nickname that might exist (e.g., 'My Main Savings' if in sample data)
-    found_acc_nick = find_account_by_natural_language(current_user_id, "My Main Savings")
-    if found_acc_nick:
-        print(f"  Found account (by nickname 'My Main Savings'): ID {found_acc_nick['account_id']} - Nickname: {found_acc_nick.get('account_nickname', 'N/A')}, Type: {found_acc_nick['account_type']}")
-    else:
-        print("  Account matching nickname 'My Main Savings' not found.")
-
-    # Test with synonym "checking"
-    found_acc_checking = find_account_by_natural_language(current_user_id, "checking")
-    if found_acc_checking:
-        print(f"  Found account (by synonym 'checking' -> 'current'): ID {found_acc_checking['account_id']} - Nickname: {found_acc_checking.get('account_nickname', 'N/A')}, Type: {found_acc_checking['account_type']}")
-    else:
-        print("  Account matching synonym 'checking' not found.")
-
-    # Test with synonym "checking account"
-    found_acc_checking_account = find_account_by_natural_language(current_user_id, "checking account")
-    if found_acc_checking_account:
-        print(f"  Found account (by synonym 'checking account' -> 'current'): ID {found_acc_checking_account['account_id']} - Nickname: {found_acc_checking_account.get('account_nickname', 'N/A')}, Type: {found_acc_checking_account['account_type']}")
-    else:
-        print("  Account matching synonym 'checking account' not found.")
-
-
-    print("\n--- Billers ---")
-    biller_id_to_test = "test_biller_py_001" # Example biller ID, unique for test isolation
-    biller_nickname_test = "My Test Biller"
-    biller_acc_num_test = "TB12345"
-    biller_due_amt_test = 50.25
-    biller_due_date_test = "2025-08-15"
-    biller_type_test = "INTERNET"
-
-    # Clean up if exists from previous run
-    print(f"Attempting to remove biller {biller_id_to_test} if it exists (cleanup)...")
-    remove_biller(current_user_id, biller_id_to_test)
-
-    print(f"Attempting to register biller: {biller_id_to_test} ({biller_nickname_test})")
-    reg_success = register_biller(
-        user_id=current_user_id,
-        biller_id=biller_id_to_test,
-        biller_nickname=biller_nickname_test,
-        account_number_at_biller=biller_acc_num_test,
-        last_due_amount=biller_due_amt_test,
-        last_due_date=biller_due_date_test,
-        bill_type=biller_type_test
-    )
-    print(f"  Registration successful: {reg_success}")
-
-    if reg_success:
-        print(f"\nDetails for biller {biller_id_to_test}:")
-        details = get_bill_details(current_user_id, biller_id_to_test)
-        if details:
-            print(f"  {details}")
+        if query_job.num_dml_affected_rows > 0:
+            success_msg = f"Biller '{payee_id}' updated successfully."
+            log_bq_interaction(func_name, params, query_str, status="SUCCESS", result_summary=success_msg)
+            return {"status": "SUCCESS", "message": success_msg, "updated_fields": list(updates.keys())}
         else:
-            print(f"  Could not retrieve details for {biller_id_to_test}")
-
-        print(f"\nAttempting to update biller {biller_id_to_test} nickname...")
-        update_success = update_biller_details(
-            user_id=current_user_id,
-            biller_id=biller_id_to_test,
-            new_biller_nickname="My Updated Test Biller"
-        )
-        print(f"  Update successful: {update_success}")
-        if update_success:
-            details_after_update = get_bill_details(current_user_id, biller_id_to_test)
-            if details_after_update:
-                print(f"  Updated details: {details_after_update}")
-            else:
-                print(f"  Could not retrieve details for {biller_id_to_test} after update.")
+            err_msg = f"Biller with ID '{payee_id}' not found for user '{user_id}', or no changes were made."
+            log_bq_interaction(func_name, params, query_str, status="BILLER_NOT_FOUND_OR_NO_CHANGE", error_message=err_msg)
+            return {"status": "BILLER_NOT_FOUND_OR_NO_CHANGE", "message": err_msg}
+    except Exception as e:
+        logger.error("Exception during biller update: %s", str(e), exc_info=True)
+        log_bq_interaction(func_name, params, query_str, status="ERROR_UPDATE_FAILED", error_message=str(e))
+        return {"status": "ERROR_UPDATE_FAILED", "message": "Failed to update biller details."}
 
 
-        print(f"\nAttempting to pay bill for {biller_nickname_test}...")
-        pay_success = pay_bill(current_user_id, biller_nickname_test, biller_due_amt_test)
-        print(f"  Payment successful: {pay_success}")
-        if pay_success:
-            details_after_payment = get_bill_details(current_user_id, biller_id_to_test)
-            if details_after_payment:
-                print(f"  Details after payment: {details_after_payment}") # last_due_amount should be 0.0
-            else:
-                print(f"  Could not retrieve details for {biller_id_to_test} after payment.")
+def remove_biller(user_id: str, payee_id: str) -> dict:
+    """Removes a biller from the user's registered list."""
+    func_name = "remove_biller"
+    params = {"user_id": user_id, "payee_id": payee_id}
+    
+    if not client:
+        log_bq_interaction(func_name, params, status="ERROR_CLIENT_NOT_INITIALIZED", error_message="BigQuery client not available.")
+        return {"status": "ERROR_CLIENT_NOT_INITIALIZED", "message": "BigQuery client not available."}
+
+    billers_table = _table_ref("RegisteredBillers")
+    query_str = f"DELETE FROM {billers_table} WHERE user_id = @user_id AND biller_id = @payee_id"
+    
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("user_id", "STRING", user_id),
+            bigquery.ScalarQueryParameter("payee_id", "STRING", payee_id),
+        ]
+    )
+
+    try:
+        query_job = client.query(query_str, job_config=job_config)
+        query_job.result() # Wait for completion
+
+        if query_job.num_dml_affected_rows > 0:
+            success_msg = f"Biller with ID '{payee_id}' has been successfully removed."
+            log_bq_interaction(func_name, params, query_str, status="SUCCESS", result_summary=success_msg)
+            return {"status": "SUCCESS", "message": success_msg}
+        else:
+            err_msg = f"No biller with ID '{payee_id}' found for user '{user_id}'."
+            log_bq_interaction(func_name, params, query_str, status="BILLER_NOT_FOUND", error_message=err_msg)
+            return {"status": "BILLER_NOT_FOUND", "message": err_msg}
+    except Exception as e:
+        logger.error("Exception during biller removal: %s", str(e), exc_info=True)
+        log_bq_interaction(func_name, params, query_str, status="ERROR_DELETE_FAILED", error_message=str(e))
+        return {"status": "ERROR_DELETE_FAILED", "message": "Failed to remove biller."}
 
 
-        print(f"\nAttempting to remove biller {biller_id_to_test}...")
-        remove_success = remove_biller(current_user_id, biller_id_to_test)
-        print(f"  Removal successful: {remove_success}")
-        if remove_success:
-            details_after_removal = get_bill_details(current_user_id, biller_id_to_test)
-            if not details_after_removal:
-                print(f"  Biller {biller_id_to_test} successfully removed (details are None).")
-            else:
-                print(f"  Biller {biller_id_to_test} still exists after removal attempt.")
+def list_registered_billers(user_id: str) -> dict:
+    """
+    Lists all registered billers for a given user.
+    """
+    func_name = "list_registered_billers"
+    params = {"user_id": user_id}
+    query_str = None
+    
+    if not client:
+        log_bq_interaction(func_name, params, status="ERROR_CLIENT_NOT_INITIALIZED", error_message="BigQuery client not available.")
+        return {"status": "ERROR_CLIENT_NOT_INITIALIZED", "message": "BigQuery client not available."}
+
+    billers_table = _table_ref("RegisteredBillers")
+    query_str = f"""
+        SELECT biller_id, biller_name, bill_type, payee_nickname, last_due_amount, last_due_date
+        FROM {billers_table}
+        WHERE user_id = @user_id
+        ORDER BY biller_name
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("user_id", "STRING", user_id)]
+    )
+
+    try:
+        query_job = client.query(query_str, job_config=job_config)
+        results = list(query_job.result())
+
+        if not results:
+            log_bq_interaction(func_name, params, query_str, status="NO_BILLERS_FOUND", result_summary="No registered billers found for the user.")
+            return {"status": "NO_BILLERS_FOUND", "message": "You have no registered billers."}
+
+        billers_list = [{
+            "biller_id": row.biller_id,
+            "biller_name": row.biller_name,
+            "bill_type": row.bill_type,
+            "payee_nickname": row.payee_nickname,
+            "due_amount": float(row.last_due_amount) if row.last_due_amount is not None else None,
+            "due_date": row.last_due_date.isoformat() if row.last_due_date else None,
+        } for row in results]
+
+        log_bq_interaction(func_name, params, query_str, status="SUCCESS", result_summary=f"Found {len(billers_list)} biller(s).")
+        return {"status": "SUCCESS", "billers": billers_list}
+    except Exception as e:
+        logger.error("Exception in list_registered_billers: %s", str(e), exc_info=True)
+        log_bq_interaction(func_name, params, query_str, status="ERROR_QUERY_FAILED", error_message=str(e))
+        return {"status": "ERROR_QUERY_FAILED", "message": "An error occurred while fetching your billers."}
+
+
+def get_accounts_for_user(user_id: str) -> list:
+    """
+    Retrieves all accounts (ID, type, balance) for a given user.
+    """
+    func_name = "get_accounts_for_user"
+    params = {"user_id": user_id}
+    query_str = None
+    
+    if not client:
+        log_bq_interaction(func_name, params, status="ERROR_CLIENT_NOT_INITIALIZED", error_message="BigQuery client not available.")
+        return [{"status": "ERROR_CLIENT_NOT_INITIALIZED", "message": "BigQuery client not available."}]
+
+    accounts_table = _table_ref("Accounts")
+    query_str = f"""
+        SELECT account_id, account_type, balance, currency
+        FROM {accounts_table}
+        WHERE user_id = @user_id
+        ORDER BY account_type
+    """
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[bigquery.ScalarQueryParameter("user_id", "STRING", user_id)]
+    )
+
+    try:
+        query_job = client.query(query_str, job_config=job_config)
+        results = list(query_job.result())
+
+        if not results:
+            log_bq_interaction(func_name, params, query_str, status="NO_ACCOUNTS_FOUND", result_summary="No accounts found for the user.")
+            return [{"status": "NO_ACCOUNTS_FOUND", "message": "You have no accounts."}]
+
+        accounts_list = [{
+            "account_id": row.account_id,
+            "account_type": row.account_type,
+            "balance": float(row.balance),
+            "currency": row.currency
+        } for row in results]
+
+        log_bq_interaction(func_name, params, query_str, status="SUCCESS", result_summary=f"Found {len(accounts_list)} account(s).")
+        return accounts_list
+    except Exception as e:
+        logger.error("Exception in get_accounts_for_user: %s", str(e), exc_info=True)
+        log_bq_interaction(func_name, params, query_str, status="ERROR_QUERY_FAILED", error_message=str(e))
+        return [{"status": "ERROR_QUERY_FAILED", "message": "An error occurred while fetching your accounts."}]
+
+
+def find_account_by_natural_language(user_id: str, natural_language_string: str) -> dict:
+    """
+    Finds the best matching account for a user based on a natural language string.
+    It scores based on account_type, account_id, and synonyms.
+    """
+    func_name = "find_account_by_natural_language"
+    params = {"user_id": user_id, "natural_language_string": natural_language_string}
+    
+    if not natural_language_string:
+        log_bq_interaction(func_name, params, status="ERROR_INVALID_INPUT", error_message="Natural language string cannot be empty.")
+        return {"status": "ERROR_INVALID_INPUT", "message": "No account specified."}
+
+    all_accounts = get_accounts_for_user(user_id)
+    if not all_accounts or "status" in all_accounts[0]: # Check if get_accounts_for_user returned an error
+        log_bq_interaction(func_name, params, status="ERROR_FETCHING_ACCOUNTS", error_message="Could not fetch user accounts.")
+        return {"status": "ERROR_FETCHING_ACCOUNTS", "message": "Could not retrieve your accounts to perform search."}
+
+    search_term = natural_language_string.lower().strip()
+    
+    # Remove common conversational words
+    conversational_words = ["my", "account", "acc"]
+    for word in conversational_words:
+        search_term = search_term.replace(word, "").strip()
+
+    # Define synonyms for account types
+    synonyms = {
+        "checking": ["checking", "checkings", "chk", "primary"],
+        "savings": ["savings", "saving", "sav"],
+        "credit card": ["credit card", "credit", "cc", "visa", "mastercard"],
+    }
+
+    best_match = None
+    highest_score = 0
+
+    for account in all_accounts:
+        current_score = 0
+        account_type_lower = account.get("account_type", "").lower()
+        account_id_lower = account.get("account_id", "").lower()
+
+        # Score based on direct match with account_type
+        if search_term == account_type_lower:
+            current_score += 10
+
+        # Score based on partial match with account_type
+        if search_term in account_type_lower:
+            current_score += 5
+
+        # Score based on synonyms
+        if account_type_lower in synonyms:
+            if search_term in synonyms[account_type_lower]:
+                current_score += 8 # High score for synonym match
+
+        # Score based on match with account_id
+        if search_term == account_id_lower:
+            current_score += 10
+        
+        if search_term in account_id_lower:
+            current_score += 2
+
+        # Check for "account" and boost score
+        if "account" in search_term and account_type_lower in search_term:
+            current_score += 3
+
+        if current_score > highest_score:
+            highest_score = current_score
+            best_match = account
+    
+    if best_match and highest_score > 3: # Threshold to avoid weak matches
+        result = {
+            "status": "SUCCESS",
+            "account_id": best_match["account_id"],
+            "account_type": best_match["account_type"],
+            "balance": best_match["balance"],
+            "currency": best_match["currency"],
+            "search_score": highest_score
+        }
+        log_bq_interaction(func_name, params, status="SUCCESS", result_summary=f"Found best match: {best_match['account_id']} with score {highest_score}")
+        return result
     else:
-        print(f"Skipping further biller tests as registration for {biller_id_to_test} failed.")
-
-    # Example of trying to find an account that doesn't exist
-    print("\n--- Find Non-existent Account ---")
-    non_existent_account = find_account_by_natural_language(current_user_id, "My Imaginary Account")
-    if non_existent_account:
-        print(f"  Error: Found account for 'My Imaginary Account': {non_existent_account}")
-    else:
-        print("  Correctly did not find 'My Imaginary Account'.")
-
-    print("\nExample usage finished.")
+        err_msg = f"Could not find a matching account for '{natural_language_string}'. Please be more specific (e.g., 'checking account', 'savings')."
+        log_bq_interaction(func_name, params, status="ERROR_ACCOUNT_NOT_FOUND", error_message=err_msg)
+        return {"status": "ERROR_ACCOUNT_NOT_FOUND", "message": err_msg}
