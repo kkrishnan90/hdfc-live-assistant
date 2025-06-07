@@ -100,6 +100,7 @@ export const LogoProvider = ({ children }) => {
   const [logoUrl, setLogoUrl] = useState('');
   const [dominantColor, setDominantColor] = useState('#282c34'); // Default color
   const [complementaryColor, setComplementaryColor] = useState('#ED7D31'); // Default complementary color
+  const [logoBgStyle, setLogoBgStyle] = useState('default');
 
   const fetchHeaderStyle = useCallback(async () => {
     try {
@@ -131,12 +132,52 @@ export const LogoProvider = ({ children }) => {
     fetchHeaderStyle();
   }, [fetchHeaderStyle]);
 
+  useEffect(() => {
+    if (!logoUrl) return;
+
+    const analyzeLogoBackground = (url) => {
+      const img = new Image();
+      img.crossOrigin = 'Anonymous';
+      img.src = url;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = img.width;
+        canvas.height = img.height;
+        ctx.drawImage(img, 0, 0);
+
+        const points = [
+          [0, 0], // Top-left
+          [img.width - 1, 0], // Top-right
+          [0, img.height - 1], // Bottom-left
+          [img.width - 1, img.height - 1], // Bottom-right
+          [Math.floor(img.width / 2), Math.floor(img.height / 2)], // Center
+        ];
+
+        let lightPixelCount = 0;
+        for (const [x, y] of points) {
+          const pixelData = ctx.getImageData(x, y, 1, 1).data;
+          const [r, g, b, a] = pixelData;
+          // Check for white (with tolerance) or transparent
+          if (a < 128 || (r > 230 && g > 230 && b > 230)) {
+            lightPixelCount++;
+          }
+        }
+
+        // If 3 or more of the 5 points are light, classify as a light background
+        setLogoBgStyle(lightPixelCount >= 3 ? 'light' : 'dark');
+      };
+    };
+
+    analyzeLogoBackground(logoUrl);
+  }, [logoUrl]);
+
   const refreshLogo = () => {
     fetchHeaderStyle();
   };
 
   return (
-    <LogoContext.Provider value={{ logoUrl, dominantColor, complementaryColor, refreshLogo }}>
+    <LogoContext.Provider value={{ logoUrl, dominantColor, complementaryColor, logoBgStyle, refreshLogo }}>
       {children}
     </LogoContext.Provider>
   );

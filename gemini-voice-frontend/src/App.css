@@ -138,6 +138,7 @@ body {
   width: 100%;
   box-sizing: border-box;
   min-height: 60px;
+  border-bottom: 1px solid #e0e0e0; /* Subtle border */
 }
 
 .App-header img {
@@ -146,6 +147,8 @@ body {
   max-height: 50px;
   object-fit: contain;
   padding: 10px;
+  background-color: white;
+  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.2));
 }
 
 .results-content {
@@ -486,6 +489,17 @@ code {
   margin-top: 10px; /* Ensure distinct spacing between different speakers */
 }
 
+/* Styles for light background logos */
+.logo-bg-light .user-bubble {
+  background-color: #f0f0f0; /* Grey background for user message */
+  color: #000000; /* Black font color */
+}
+
+.logo-bg-light .ai-bubble {
+  background-color: #000000; /* Black background for AI message */
+  color: #ffffff; /* White font color */
+}
+
 /* Styles for new elements in Control Bar */
 .language-selector-dropdown {
   padding: 6px 10px;
@@ -709,4 +723,27 @@ code {
   max-height: 100px;
   object-fit: contain;
   pointer-events: none;
+}
+/* Light mode styles for chat bubbles */
+.light-mode.user-bubble {
+  background-color: #eeeeee;
+  color: #000000;
+}
+
+.light-mode.ai-bubble {
+  background-color: #000000;
+  color: #ffffff;
+}
+/* === Light Logo Background Overrides === */
+
+/* When the logo has a light background, force the FAB to be black for all states */
+.floating-action-button.logo-bg-light,
+.floating-action-button.logo-bg-light:hover,
+.floating-action-button.logo-bg-light:active,
+.floating-action-button.logo-bg-light.fab-active,
+.floating-action-button.logo-bg-light.fab-active:hover,
+.floating-action-button.logo-bg-light.fab-active:active {
+  background-color: #000000 !important; /* Black background for visibility */
+  color: #ffffff !important; /* White icon */
+  filter: none !important; /* Reset any filters that might affect color */
 }

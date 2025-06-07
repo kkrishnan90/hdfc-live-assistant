@@ -64,7 +64,7 @@ const MainContent = () => {
   const [fabActive, setFabActive] = useState(false);
   
   // Get colors from LogoContext
-  const { dominantColor, complementaryColor } = useContext(LogoContext);
+  const { dominantColor, complementaryColor, logoBgStyle } = useContext(LogoContext);
 
   const isRecordingRef = useRef(isRecording);
   const isSessionActiveRef = useRef(isSessionActive);
@@ -530,7 +530,7 @@ const MainContent = () => {
 
   return (
     <>
-      <div className="main-panel">
+      <div className={`main-panel ${logoBgStyle === 'light' ? 'logo-bg-light' : ''}`}>
         <div className="main-panel-header">
           <Header />
         </div>
@@ -541,7 +541,7 @@ const MainContent = () => {
             </div>
           ) : (
             transcriptionMessages.map((msg, index) => (
-              <div key={index} className={`chat-bubble ${msg.sender === 'user' ? 'user-bubble' : 'ai-bubble'}`}>
+              <div key={index} className={`chat-bubble ${msg.sender === 'user' ? 'user-bubble' : 'ai-bubble'} ${logoBgStyle === 'light' ? 'light-mode' : ''}`}>
                 <div className="chat-bubble-text">{msg.text}</div>
               </div>
             ))
@@ -595,8 +595,8 @@ const MainContent = () => {
       </div>
 
       {/* Floating Action Button */}
-      <button 
-        className={`floating-action-button ${fabActive ? 'fab-active' : ''}`} 
+      <button
+        className={`floating-action-button ${fabActive ? 'fab-active' : ''} ${logoBgStyle === 'light' ? 'logo-bg-light' : ''}`}
         onClick={handleFabClick}
         title={fabActive ? "Stop Session" : "Start Session"}
       >
