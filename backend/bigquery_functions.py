@@ -284,13 +284,13 @@ def initiate_fund_transfer_check(from_account_type: str, to_account_type: str, a
         return {"status": "ERROR_INVALID_AMOUNT", "message": "Transfer amount must be a positive number."}
 
     # _get_account_details logs its own interactions
-    from_account_details = _get_account_details(from_account_type, USER_ID)
+    from_account_details = find_account_by_natural_language(USER_ID, from_account_type)
     if from_account_details["status"] != "SUCCESS":
         err_msg = f"From account ('{from_account_type}'): {from_account_details.get('message', 'Error fetching details.')}"
         log_bq_interaction(func_name, params, status=from_account_details["status"], error_message=err_msg)
         return {"status": from_account_details["status"], "message": err_msg}
 
-    to_account_details = _get_account_details(to_account_type, USER_ID)
+    to_account_details = find_account_by_natural_language(USER_ID, to_account_type)
     if to_account_details["status"] != "SUCCESS":
         err_msg = f"To account ('{to_account_type}'): {to_account_details.get('message', 'Error fetching details.')}"
         log_bq_interaction(func_name, params, status=to_account_details["status"], error_message=err_msg)
@@ -465,12 +465,12 @@ def execute_fund_transfer(from_account_id: str, to_account_id: str, amount: floa
         return {"status": "ERROR_EXCEPTION", "message": "An internal error occurred during fund transfer.", "details": str(e)}
 
 
-def get_bill_details(bill_type: str, payee_nickname: str = None) -> dict:
+def get_bill_details(bill_type: str, biller_nickname: str = None) -> dict:
     """
     Queries the RegisteredBillers table for bill details for the USER_ID.
     """
     func_name = "get_bill_details"
-    params = {"bill_type": bill_type, "payee_nickname": payee_nickname, "user_id": USER_ID}
+    params = {"bill_type": bill_type, "biller_nickname": biller_nickname, "user_id": USER_ID}
     query_str = None
 
     if not client:
@@ -488,9 +488,9 @@ def get_bill_details(bill_type: str, payee_nickname: str = None) -> dict:
         where_conditions.append("bill_type = @bill_type")
         query_params_list.append(bigquery.ScalarQueryParameter("bill_type", "STRING", bill_type))
 
-    if payee_nickname:
-        where_conditions.append("payee_nickname = @payee_nickname")
-        query_params_list.append(bigquery.ScalarQueryParameter("payee_nickname", "STRING", payee_nickname))
+    if biller_nickname:
+        where_conditions.append("biller_nickname = @biller_nickname")
+        query_params_list.append(bigquery.ScalarQueryParameter("biller_nickname", "STRING", biller_nickname))
         
     query_str = f"""
         SELECT biller_id, biller_name, last_due_amount as due_amount, last_due_date as due_date, default_payment_account_id
@@ -801,7 +801,7 @@ def register_biller(user_id: str, biller_name: str, biller_type: str, account_nu
             bigquery.ScalarQueryParameter("biller_name", "STRING", biller_name),
             bigquery.ScalarQueryParameter("biller_type", "STRING", biller_type),
             bigquery.ScalarQueryParameter("account_number", "STRING", account_number),
-            bigquery.ScalarQueryParameter("payee_nickname", "STRING", payee_nickname),
+            bigquery.ScalarQueryParameter("biller_nickname", "STRING", biller_nickname),
             bigquery.ScalarQueryParameter("default_payment_account_id", "STRING", default_payment_account_id),
             bigquery.ScalarQueryParameter("due_amount", "FLOAT64", due_amount),
             bigquery.ScalarQueryParameter("due_date", "DATE", due_date_obj),
@@ -939,7 +939,7 @@ def list_registered_billers(user_id: str) -> dict:
 
     billers_table = _table_ref("RegisteredBillers")
     query_str = f"""
-        SELECT biller_id, biller_name, bill_type, payee_nickname, last_due_amount, last_due_date
+        SELECT biller_id, biller_name, bill_type, biller_nickname, last_due_amount, last_due_date
         FROM {billers_table}
         WHERE user_id = @user_id
         ORDER BY biller_name
@@ -960,7 +960,7 @@ def list_registered_billers(user_id: str) -> dict:
             "biller_id": row.biller_id,
             "biller_name": row.biller_name,
             "bill_type": row.bill_type,
-            "payee_nickname": row.payee_nickname,
+            "biller_nickname": row.biller_nickname,
             "due_amount": float(row.last_due_amount) if row.last_due_amount is not None else None,
             "due_date": row.last_due_date.isoformat() if row.last_due_date else None,
         } for row in results]
