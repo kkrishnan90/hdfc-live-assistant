@@ -1,3 +1,24 @@
+from bigquery_functions import GLOBAL_LOG_STORE
+from gemini_tools import (
+    banking_tool,
+    getBalance,
+    getTransactionHistory,
+    initiateFundTransfer,
+    executeFundTransfer,
+    getBillDetails,
+    payBill,
+    registerBiller,
+    updateBillerDetails,
+    removeBiller,
+    listRegisteredBillers,
+    search_faq
+)
+from gcs_utils import (
+    upload_bytes_to_gcs,
+    file_exists_in_gcs,
+    get_file_from_gcs
+)
+from datetime import datetime, timezone  # For timestamping raw stdout logs
 import asyncio
 import os
 import traceback
@@ -13,29 +34,7 @@ import extcolors
 from google.genai import types
 from dotenv import load_dotenv
 load_dotenv()
-from datetime import datetime, timezone  # For timestamping raw stdout logs
 
-from gcs_utils import (
-    upload_bytes_to_gcs,
-    file_exists_in_gcs,
-    get_file_from_gcs
-)
-
-from gemini_tools import (
-    banking_tool,
-    getBalance,
-    getTransactionHistory,
-    initiateFundTransfer,
-    executeFundTransfer,
-    getBillDetails,
-    payBill,
-    registerBiller,
-    updateBillerDetails,
-    removeBiller,
-    listRegisteredBillers,
-    search_faq
-)
-from bigquery_functions import GLOBAL_LOG_STORE
 
 # --- Log Capturing Setup ---
 CAPTURED_STDOUT_LOGS = []
@@ -80,17 +79,12 @@ class StdoutTee(io.TextIOBase):
 sys.stdout = StdoutTee(_original_stdout, CAPTURED_STDOUT_LOGS)
 # --- End Log Capturing Setup ---
 
-GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY")
-if not GOOGLE_API_KEY:
-    GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-    if not GOOGLE_API_KEY:
-        raise ValueError(
-            "GEMINI_API_KEY (or GOOGLE_API_KEY) environment variable not set.")
 
-gemini_client = genai.Client(api_key=GOOGLE_API_KEY)
+gemini_client = genai.Client(
+    vertexai=True, project="account-pocs", location="us-central1")
 # print("Using Google AI SDK with genai.Client.")
 
-GEMINI_MODEL_NAME = "gemini-2.0-flash-live-001"
+GEMINI_MODEL_NAME = "gemini-live-2.5-flash"
 INPUT_SAMPLE_RATE = 16000
 
 app = Quart(__name__)
@@ -118,62 +112,75 @@ async def upload_logo():
             try:
                 # First try the async approach
                 file_content = await file.read()
-                print(f"Debug: Successfully read file using async approach. Data size: {len(file_content)} bytes")
+                print(
+                    f"Debug: Successfully read file using async approach. Data size: {len(file_content)} bytes")
                 # Check first few bytes to verify it's an image
                 if len(file_content) > 20:
-                    first_bytes = ', '.join(f'{b:02x}' for b in file_content[:20])
+                    first_bytes = ', '.join(
+                        f'{b:02x}' for b in file_content[:20])
                     print(f"Debug: First 20 bytes (async): {first_bytes}")
             except TypeError as e:
                 if "can't be used in 'await'" in str(e):
                     # If it fails with our specific error, use the sync approach
-                    print("Falling back to sync file.read() due to Cloud Run compatibility")
+                    print(
+                        "Falling back to sync file.read() due to Cloud Run compatibility")
                     file.seek(0)
                     file_content = file.read()
-                    print(f"Debug: Read file using sync approach. Data size: {len(file_content)} bytes")
+                    print(
+                        f"Debug: Read file using sync approach. Data size: {len(file_content)} bytes")
                     # Check first few bytes to verify it's an image
                     if len(file_content) > 20:
-                        first_bytes = ', '.join(f'{b:02x}' for b in file_content[:20])
+                        first_bytes = ', '.join(
+                            f'{b:02x}' for b in file_content[:20])
                         print(f"Debug: First 20 bytes (sync): {first_bytes}")
                 else:
                     # If it's a different TypeError, re-raise it
                     print(f"Debug: Unexpected TypeError: {e}")
                     raise
-            
+
             # Validate image format and content
             try:
                 # Create PIL Image object from binary data
-                print(f"Debug: Creating BytesIO object for image validation. Data size: {len(file_content)} bytes")
+                print(
+                    f"Debug: Creating BytesIO object for image validation. Data size: {len(file_content)} bytes")
                 img_io = io.BytesIO(file_content)
-                print(f"Debug: BytesIO created: {img_io}, position: {img_io.tell()}")
-                
+                print(
+                    f"Debug: BytesIO created: {img_io}, position: {img_io.tell()}")
+
                 # Reset position to beginning to ensure proper reading
                 img_io.seek(0)
-                print(f"Debug: BytesIO position after seek(0): {img_io.tell()}")
-                
+                print(
+                    f"Debug: BytesIO position after seek(0): {img_io.tell()}")
+
                 try:
                     img = Image.open(img_io)
-                    print(f"Debug: Image opened successfully. Format: {img.format}, Mode: {img.mode}, Size: {img.size}")
-                    
+                    print(
+                        f"Debug: Image opened successfully. Format: {img.format}, Mode: {img.mode}, Size: {img.size}")
+
                     # Validate image format
                     if img.format not in ['PNG', 'JPEG', 'JPG']:
-                        print(f"Warning: Unsupported image format: {img.format}. Converting to PNG.")
-                    
+                        print(
+                            f"Warning: Unsupported image format: {img.format}. Converting to PNG.")
+
                     # Convert to PNG if needed and get bytes
                     if img.format != 'PNG':
-                        print(f"Debug: Converting image from {img.format} to PNG")
+                        print(
+                            f"Debug: Converting image from {img.format} to PNG")
                         img_byte_arr = io.BytesIO()
                         img.save(img_byte_arr, format='PNG')
                         file_content = img_byte_arr.getvalue()
-                        print(f"Debug: Converted to PNG. New data size: {len(file_content)} bytes")
+                        print(
+                            f"Debug: Converted to PNG. New data size: {len(file_content)} bytes")
                 except Exception as img_open_err:
-                    print(f"Debug: Error opening image with PIL: {type(img_open_err).__name__}: {img_open_err}")
+                    print(
+                        f"Debug: Error opening image with PIL: {type(img_open_err).__name__}: {img_open_err}")
                     # Try to get more diagnostic information
                     img_io.seek(0)
                     header_bytes = img_io.read(20)
                     hex_bytes = ' '.join(f'{b:02x}' for b in header_bytes)
                     print(f"Debug: First 20 bytes of image data: {hex_bytes}")
                     raise
-                
+
                 # Extract dominant color directly from PIL Image
                 hex_color = "#282c34"  # Default color
                 try:
@@ -182,17 +189,20 @@ async def upload_logo():
                     if colors:
                         dominant_color = colors[0][0]
                         hex_color = '#%02x%02x%02x' % dominant_color
-                        print(f"Successfully extracted dominant color: {hex_color}")
+                        print(
+                            f"Successfully extracted dominant color: {hex_color}")
                     else:
                         print("No colors found in image, using default color.")
                 except IndexError as idx_err:
-                    print(f"Could not find a dominant color, using default. Error: {idx_err}")
+                    print(
+                        f"Could not find a dominant color, using default. Error: {idx_err}")
                 except (ValueError, TypeError) as color_exc:
                     print(f"Error during color extraction: {color_exc}")
                 except Exception as ext_err:
-                    print(f"Unexpected error during color extraction: {ext_err}")
+                    print(
+                        f"Unexpected error during color extraction: {ext_err}")
                     traceback.print_exc()
-                    
+
             except (IOError, SyntaxError) as img_err:
                 print(f"Error processing image: {img_err}")
                 return jsonify({"error": "Invalid image format or corrupted image"}), 400
@@ -200,7 +210,8 @@ async def upload_logo():
             # Upload logo directly to GCS from memory
             gcs_logo_name = "logo.png"
             try:
-                upload_result = upload_bytes_to_gcs(file_content, gcs_logo_name, 'image/png')
+                upload_result = upload_bytes_to_gcs(
+                    file_content, gcs_logo_name, 'image/png')
                 print(f"Logo successfully uploaded to GCS: {upload_result}")
             except Exception as gcs_err:
                 print(f"Error uploading logo to GCS: {gcs_err}")
@@ -211,15 +222,17 @@ async def upload_logo():
                 "dominantColor": hex_color,
                 "logoUrl": "/api/logo"
             }
-            
+
             # Convert style data to JSON string
             style_json = json.dumps(style_data)
-            
+
             # Upload style JSON to GCS
             gcs_style_name = "header_style.json"
             try:
-                style_upload_result = upload_bytes_to_gcs(style_json.encode('utf-8'), gcs_style_name, 'application/json')
-                print(f"Style JSON successfully uploaded to GCS: {style_upload_result}")
+                style_upload_result = upload_bytes_to_gcs(
+                    style_json.encode('utf-8'), gcs_style_name, 'application/json')
+                print(
+                    f"Style JSON successfully uploaded to GCS: {style_upload_result}")
             except Exception as style_err:
                 print(f"Error uploading style JSON to GCS: {style_err}")
                 return jsonify({"error": "Failed to store style information"}), 500
@@ -251,7 +264,7 @@ async def get_header_style():
                 print("Falling back to default header style")
         else:
             print("Header style not found in GCS, using default style")
-        
+
         # Return a default style if the file doesn't exist or there was an error
         return jsonify({
             "dominantColor": "#282c34",
@@ -273,32 +286,39 @@ async def get_logo():
                 # Get logo data from GCS
                 logo_data = get_file_from_gcs("logo.png")
                 print("Successfully retrieved logo from GCS")
-                print(f"Debug: Logo data type: {type(logo_data)}, size: {len(logo_data)} bytes")
-                
+                print(
+                    f"Debug: Logo data type: {type(logo_data)}, size: {len(logo_data)} bytes")
+
                 # Validate the image data
                 try:
                     img_io = io.BytesIO(logo_data)
-                    print(f"Debug: BytesIO created: {img_io}, tell position: {img_io.tell()}")
-                    
+                    print(
+                        f"Debug: BytesIO created: {img_io}, tell position: {img_io.tell()}")
+
                     # Reset position to beginning just to be safe
                     img_io.seek(0)
-                    print(f"Debug: BytesIO position after seek(0): {img_io.tell()}")
-                    
+                    print(
+                        f"Debug: BytesIO position after seek(0): {img_io.tell()}")
+
                     try:
                         img = Image.open(img_io)
-                        print(f"Debug: Image opened successfully. Format: {img.format}, Mode: {img.mode}, Size: {img.size}")
+                        print(
+                            f"Debug: Image opened successfully. Format: {img.format}, Mode: {img.mode}, Size: {img.size}")
                     except Exception as detailed_err:
-                        print(f"Debug: Detailed error opening image: {type(detailed_err).__name__}: {detailed_err}")
+                        print(
+                            f"Debug: Detailed error opening image: {type(detailed_err).__name__}: {detailed_err}")
                         # Try to get more diagnostic information
                         img_io.seek(0)
                         header_bytes = img_io.read(20)
                         hex_bytes = ' '.join(f'{b:02x}' for b in header_bytes)
-                        print(f"Debug: First 20 bytes of image data: {hex_bytes}")
+                        print(
+                            f"Debug: First 20 bytes of image data: {hex_bytes}")
                         raise
                 except (IOError, SyntaxError) as img_validate_err:
-                    print(f"Retrieved logo data is not a valid image: {img_validate_err}")
+                    print(
+                        f"Retrieved logo data is not a valid image: {img_validate_err}")
                     return jsonify({"error": "Retrieved logo is not a valid image"}), 500
-                
+
                 return Response(logo_data, mimetype='image/png')
             except Exception as fetch_err:
                 print(f"Error fetching logo from GCS: {fetch_err}")
@@ -323,8 +343,8 @@ async def websocket_endpoint():
 
     gemini_live_config = types.LiveConnectConfig(
         response_modalities=["AUDIO"],
-        system_instruction="You are helpful assistant for banking services in US. You are currently interacting with a user who is using a voice-based interface to interact with you. You should respond to the user's voice commands in a natural and conversational manner.You should not use any emojis or special characters.\
-            Your `user_id` is `Alex` and your bill provider is `City Power`. You will speak only in English (en-US).",
+        system_instruction="You are helpful assistant for banking services. You are currently interacting with a user who is using a voice-based interface to interact with you. You should respond to the user's voice commands in a natural and conversational manner.You should not use any emojis or special characters.\
+            Your `user_id` is `Alex` and your bill provider is `City Power`. You will detect the language of the user and respond in the same language. ",
         speech_config=types.SpeechConfig(
             language_code=language_code_to_use
         ),
@@ -774,14 +794,17 @@ async def websocket_endpoint():
             # We expect a RuntimeError if the socket is already in the process
             # of closing. We'll log this as a warning rather than crashing.
             if "after sending 'websocket.close'" in str(e):
-                print(f"WebSocket connection already closing, ignoring expected error: {e}")
+                print(
+                    f"WebSocket connection already closing, ignoring expected error: {e}")
             else:
                 # If it's a different RuntimeError, we should see it.
-                print(f"An unexpected runtime error occurred during WebSocket close: {e}")
+                print(
+                    f"An unexpected runtime error occurred during WebSocket close: {e}")
                 traceback.print_exc()
         except Exception as e:
             # Catch any other exceptions during close for completeness.
-            print(f"An unexpected error occurred during WebSocket cleanup: {e}")
+            print(
+                f"An unexpected error occurred during WebSocket cleanup: {e}")
             traceback.print_exc()
 
 
